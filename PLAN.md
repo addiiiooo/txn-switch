@@ -43,7 +43,7 @@ The domain package contains no Spring and no JPA annotations (enforced by a test
 | `Money` | value object | `long minorUnits` + `java.util.Currency`. See ADR-0005. |
 | `Pan` | value object | Luhn-checked, 12–19 digits. **Never persisted, never logged.** `toString()` is masked. |
 | `CardDetails` | value object | What we *do* keep: BIN (first 6), last 4, brand, expiry, HMAC fingerprint. |
-| `AcquirerDecision` | sealed interface | `Approved` \| `Declined` \| `Failed(retryable)`. Pattern-matched, so a new outcome breaks compilation rather than falling through a default branch. |
+| `AcquirerDecision` | sealed interface | `Approved` \| `Declined`, pattern-matched so a new outcome breaks compilation rather than falling through a default branch. A failure to *obtain* a decision is not a member: it is a typed exception, which keeps "we know the answer" and "we do not" in different types and lets Resilience4j's predicates work on exceptions in the usual way. |
 | `AuthorizationEvent` | value object | Append-only audit record of one transition. |
 | `IdempotencyRecord` | aggregate root | The dedup ledger. See §3. |
 
