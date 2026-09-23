@@ -26,6 +26,8 @@ import org.springframework.http.HttpStatusCode;
 import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
+import org.springframework.validation.method.ParameterErrors;
+import org.springframework.validation.method.ParameterValidationResult;
 import org.springframework.web.HttpMediaTypeNotSupportedException;
 import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
@@ -190,21 +192,34 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
       HttpHeaders headers,
       HttpStatusCode status,
       WebRequest request) {
+    // A method with any constrained parameter routes ALL of its validation through here,
+    // including @Valid @RequestBody. Unwrapping ParameterErrors is what keeps the response
+    // naming the offending field rather than the name of the controller argument.
     List<Map<String, String>> errors = new ArrayList<>();
-    e.getAllValidationResults()
-        .forEach(
-            result ->
-                result
-                    .getResolvableErrors()
-                    .forEach(
-                        error ->
-                            errors.add(
-                                Map.of(
-                                    "field",
-                                        String.valueOf(
-                                            result.getMethodParameter().getParameterName()),
-                                    "code", "INVALID",
-                                    "message", String.valueOf(error.getDefaultMessage())))));
+    for (ParameterValidationResult result : e.getAllValidationResults()) {
+      if (result instanceof ParameterErrors parameterErrors) {
+        parameterErrors
+            .getFieldErrors()
+            .forEach(
+                error ->
+                    errors.add(
+                        Map.of(
+                            "field", error.getField(),
+                            "code", constraintCode(error.getCode()),
+                            "message", String.valueOf(error.getDefaultMessage()))));
+      } else {
+        String parameter = String.valueOf(result.getMethodParameter().getParameterName());
+        result
+            .getResolvableErrors()
+            .forEach(
+                error ->
+                    errors.add(
+                        Map.of(
+                            "field", parameter,
+                            "code", constraintCode(firstCode(error.getCodes())),
+                            "message", String.valueOf(error.getDefaultMessage()))));
+      }
+    }
     ProblemDetail problem =
         problems.create(ErrorCode.VALIDATION_FAILED, "One or more parameters are invalid.");
     problem.setProperty("errors", errors);
@@ -285,6 +300,10 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
   @SuppressWarnings("unchecked")
   private static ResponseEntity<Object> asObject(ResponseEntity<ProblemDetail> response) {
     return (ResponseEntity<Object>) (ResponseEntity<?>) response;
+  }
+
+  private static String firstCode(String[] codes) {
+    return codes == null || codes.length == 0 ? null : codes[codes.length - 1];
   }
 
   /** {@code NotNull} becomes {@code NOT_NULL}: a code a client can branch on. */

@@ -190,6 +190,20 @@ class AuthorizationApiIT extends IntegrationTest {
   }
 
   @Test
+  void aNegativeCaptureAmountFailsValidationWithTheOffendingField() throws Exception {
+    String id = body(authorize("key-negcapture-1", "4111111111111111")).get("id").asText();
+
+    ResponseEntity<String> response =
+        post("/v1/authorizations/" + id + "/capture", null, "{\"amount\": -5}");
+
+    assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+    JsonNode problem = body(response);
+    assertThat(problem.get("code").asText()).isEqualTo("VALIDATION_FAILED");
+    assertThat(problem.get("errors").get(0).get("field").asText()).isEqualTo("amount");
+    assertThat(problem.get("errors").get(0).get("code").asText()).isEqualTo("POSITIVE");
+  }
+
+  @Test
   void anUnsupportedCurrencyIsRefused() throws Exception {
     ResponseEntity<String> response =
         post(

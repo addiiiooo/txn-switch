@@ -16,7 +16,6 @@ import java.net.URI;
 import java.util.UUID;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
-import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -27,7 +26,10 @@ import org.springframework.web.bind.annotation.RestController;
 
 @RestController
 @RequestMapping(AuthorizationController.PATH)
-@Validated
+// Deliberately not @Validated: on Spring 6.1+ that switches on the older AOP method
+// validation, which throws ConstraintViolationException and bypasses the problem-document
+// handler entirely — a too-short Idempotency-Key came back as a 500. Built-in method
+// validation raises HandlerMethodValidationException, which the handler maps properly.
 @Tag(name = "Authorizations", description = "Card authorizations and their lifecycle")
 public class AuthorizationController {
 
