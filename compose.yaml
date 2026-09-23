@@ -1,0 +1,54 @@
+# `docker compose up` and nothing else: the app waits for a healthy database, migrates
+# itself with Flyway, and reports ready when it can serve.
+#
+# The credentials here are local development values, not secrets. Every one of them is an
+# environment variable with a default, so a real deployment overrides them and nothing in
+# this repository has to know what they are.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: txnswitch
+      POSTGRES_USER: txnswitch
+      POSTGRES_PASSWORD: txnswitch
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U txnswitch -d txnswitch"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    # Sized for a laptop giving Docker 4GB, not for production.
+    command: ["postgres", "-c", "shared_buffers=128MB", "-c", "max_connections=50"]
+    mem_limit: 512m
+
+  app:
+    build:
+      context: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DB_URL: jdbc:postgresql://postgres:5432/txnswitch
+      DB_USERNAME: txnswitch
+      DB_PASSWORD: txnswitch
+      # The bundled simulator stands in for an acquirer. Point ACQUIRER_BASE_URL at a real
+      # one and set SIMULATOR_ENABLED=false to take it out of the picture.
+      SIMULATOR_ENABLED: "true"
+      ACQUIRER_BASE_URL: self
+      API_KEYS: sk_local_demo:m_demo,sk_local_other:m_other
+      CARD_FINGERPRINT_KEY: local-development-key-not-a-secret
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/actuator/health/readiness | grep -q '\"status\":\"UP\"'"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 45s
+    mem_limit: 768m
+
+volumes:
+  pgdata:

@@ -1,0 +1,81 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+# A new push supersedes an in-flight run on the same ref.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build, test and coverage gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: "21"
+          distribution: temurin
+          cache: maven
+
+      - name: Check formatting
+        run: ./mvnw -B spotless:check
+
+      # Integration tests start real Postgres containers through Testcontainers, which
+      # works on the hosted runners as-is. Reuse is a local optimisation and is left off
+      # here: a CI runner is thrown away, so there is nothing to reuse.
+      - name: Verify (tests + 85% line coverage gate)
+        run: ./mvnw -B verify
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jacoco-report
+          path: target/site/jacoco
+          if-no-files-found: error
+
+  docker:
+    name: Docker image
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: txn-switch:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Check the image actually starts
+        run: |
+          docker run -d --name pg -e POSTGRES_DB=txnswitch -e POSTGRES_USER=txnswitch \
+            -e POSTGRES_PASSWORD=txnswitch postgres:16-alpine
+          for i in $(seq 1 30); do
+            docker exec pg pg_isready -U txnswitch -d txnswitch && break
+            sleep 2
+          done
+          docker run -d --name app --link pg:postgres \
+            -e DB_URL=jdbc:postgresql://postgres:5432/txnswitch \
+            -e DB_USERNAME=txnswitch -e DB_PASSWORD=txnswitch \
+            -p 8080:8080 txn-switch:ci
+          for i in $(seq 1 45); do
+            if curl -fs http://localhost:8080/actuator/health/readiness | grep -q '"status":"UP"'; then
+              echo "ready"; exit 0
+            fi
+            sleep 2
+          done
+          echo "the image did not become ready"; docker logs app; exit 1
