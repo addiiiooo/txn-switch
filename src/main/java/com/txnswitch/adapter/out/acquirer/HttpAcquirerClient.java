@@ -69,7 +69,7 @@ public class HttpAcquirerClient implements AcquirerGateway {
                 command.merchantReference(),
                 command.amountMinorUnits(),
                 command.currencyCode(),
-                command.pan().exposeForAcquirer(),
+                com.txnswitch.adapter.SensitivePan.of(command.pan().exposeForAcquirer()),
                 command.expiryMonth(),
                 command.expiryYear()),
             DecisionMessage.class);

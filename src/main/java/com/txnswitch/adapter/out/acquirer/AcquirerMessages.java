@@ -17,7 +17,7 @@ public final class AcquirerMessages {
       String merchantReference,
       long amount,
       String currency,
-      String pan,
+      com.txnswitch.adapter.SensitivePan pan,
       int expiryMonth,
       int expiryYear) {}
 

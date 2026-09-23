@@ -6,7 +6,14 @@ import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry;
 import java.util.function.Supplier;
 import org.junit.jupiter.api.BeforeEach;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.autoconfigure.actuate.observability.AutoConfigureObservability;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.web.client.TestRestTemplate;
+import org.springframework.http.HttpEntity;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpMethod;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
@@ -27,6 +34,11 @@ import org.testcontainers.containers.PostgreSQLContainer;
  * forks a second application context and costs several seconds.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+// Spring Boot switches metrics exporters off under @SpringBootTest. Opting back in here, on
+// the shared base, keeps the whole suite on one application context: putting this annotation
+// on the one class that asserts on /actuator/prometheus would fork a second context and cost
+// several seconds for nothing.
+@AutoConfigureObservability
 @ActiveProfiles("test")
 public abstract class IntegrationTest {
 
@@ -48,6 +60,10 @@ public abstract class IntegrationTest {
   @Autowired protected AcquirerSimulatorState simulator;
 
   @Autowired protected CircuitBreakerRegistry circuitBreakers;
+
+  @Autowired protected TestRestTemplate rest;
+
+  @org.springframework.boot.test.web.server.LocalServerPort protected int port;
 
   @DynamicPropertySource
   static void datasourceProperties(DynamicPropertyRegistry registry) {
@@ -71,6 +87,47 @@ public abstract class IntegrationTest {
   void resetDownstreamState() {
     simulator.reset();
     circuitBreakers.circuitBreaker("acquirer").reset();
+  }
+
+  /** The development credential from the default configuration. */
+  public static final String API_KEY = "sk_local_demo";
+
+  public static final String MERCHANT_ID = "m_demo";
+
+  protected HttpHeaders headers(String idempotencyKey) {
+    HttpHeaders headers = new HttpHeaders();
+    headers.setContentType(MediaType.APPLICATION_JSON);
+    headers.setBearerAuth(API_KEY);
+    if (idempotencyKey != null) {
+      headers.set("Idempotency-Key", idempotencyKey);
+    }
+    return headers;
+  }
+
+  protected ResponseEntity<String> post(String path, String idempotencyKey, String body) {
+    return rest.exchange(
+        path, HttpMethod.POST, new HttpEntity<>(body, headers(idempotencyKey)), String.class);
+  }
+
+  protected ResponseEntity<String> get(String path) {
+    return rest.exchange(path, HttpMethod.GET, new HttpEntity<>(headers(null)), String.class);
+  }
+
+  protected ResponseEntity<String> authorize(String idempotencyKey, String pan) {
+    return post("/v1/authorizations", idempotencyKey, authorizeBody(pan, 1250, "USD", "order-1"));
+  }
+
+  protected static String authorizeBody(
+      String pan, long amount, String currency, String reference) {
+    return """
+        {
+          "merchantReference": "%s",
+          "amount": %d,
+          "currency": "%s",
+          "card": { "pan": "%s", "expiryMonth": 12, "expiryYear": 2030 }
+        }
+        """
+        .formatted(reference, amount, currency, pan);
   }
 
   /** Runs a block in its own transaction, the way an application service would. */

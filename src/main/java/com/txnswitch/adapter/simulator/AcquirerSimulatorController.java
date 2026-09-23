@@ -63,7 +63,7 @@ public class AcquirerSimulatorController {
       return injected;
     }
 
-    return switch (SimulatorScenario.forPan(message.pan())) {
+    return switch (SimulatorScenario.forPan(message.pan().value())) {
       case APPROVE -> approve(idempotencyKey);
       case DECLINE_DO_NOT_HONOR -> decline(idempotencyKey, "DO_NOT_HONOR", "Do not honour");
       case DECLINE_INSUFFICIENT_FUNDS ->
