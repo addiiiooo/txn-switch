@@ -67,6 +67,7 @@ the original `Idempotency-Key` (it always should, when the answer is yes).
 | [`PARTIAL_CAPTURE_NOT_SUPPORTED`](#partial_capture_not_supported) | 422 | no | — |
 | [`IDEMPOTENCY_KEY_REUSE`](#idempotency_key_reuse) | 422 | no | no |
 | [`IDEMPOTENCY_REQUEST_IN_PROGRESS`](#idempotency_request_in_progress) | 409 | yes | **yes** |
+| [`RESOURCE_NOT_FOUND`](#resource_not_found) | 404 | no | — |
 | [`AUTHORIZATION_NOT_FOUND`](#authorization_not_found) | 404 | no | — |
 | [`INVALID_STATE_TRANSITION`](#invalid_state_transition) | 409 | no | — |
 | [`AUTHORIZATION_EXPIRED`](#authorization_expired) | 409 | no | — |
@@ -195,6 +196,14 @@ requests race, one creates the authorization and the rest get this.
 ---
 
 ## Resource and state
+
+### `RESOURCE_NOT_FOUND`
+
+**404** · not retryable
+
+No endpoint at that path. Distinct from `AUTHORIZATION_NOT_FOUND`, which means the endpoint
+exists and the authorization does not — a client should be able to tell a typo in a URL from
+an unknown id.
 
 ### `AUTHORIZATION_NOT_FOUND`
 
