@@ -86,7 +86,11 @@ public final class IdempotencyRecord {
         IdempotencyState.IN_PROGRESS,
         now.plus(leaseTtl),
         1,
-        false,
+        // True from the outset: a key is only ever claimed in order to send. It is cleared
+        // again if the call provably never left the process. Erring towards "we may have
+        // sent something" is the right direction for a flag whose job is to surface holds
+        // we might have created and forgotten.
+        true,
         null,
         null,
         now,
@@ -152,16 +156,14 @@ public final class IdempotencyRecord {
   /**
    * Gives the key up without destroying the record, so the next attempt reuses the same downstream
    * identifier. This is the path taken after a timeout, an open breaker, or a failed commit.
+   *
+   * @param downstreamAttempted false only when nothing can have reached the acquirer
    */
-  public void releaseLease(Instant now) {
+  public void releaseLease(Instant now, boolean downstreamAttempted) {
     if (state == IdempotencyState.IN_PROGRESS) {
       leaseExpiresAt = now;
+      this.downstreamAttempted = downstreamAttempted;
     }
-  }
-
-  /** Records that bytes went to the acquirer, so an unresolved attempt can be counted later. */
-  public void markDownstreamAttempted() {
-    downstreamAttempted = true;
   }
 
   /** Stores the definitive response to replay. */

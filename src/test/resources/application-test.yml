@@ -1,0 +1,7 @@
+# Test overrides are kept to a minimum: configuration that only exists under test is
+# configuration that is never exercised in production.
+logging:
+  level:
+    org.hibernate.SQL: WARN
+    org.testcontainers: WARN
+    com.github.dockerjava: WARN

@@ -86,9 +86,11 @@ Rules, enforced in `Authorization`, not in the controller:
 
 Three tables, one Flyway migration (`V1__initial_schema.sql`). All timestamps are
 `TIMESTAMPTZ`; status columns are `VARCHAR` + `CHECK` rather than Postgres enums, because
-adding a value to a PG enum is a migration that cannot run inside some transactions.
+adding a value to a PG enum is a migration that cannot run inside some transactions. Table
+names are plural because `authorization` is a reserved word in standard SQL and Postgres
+will not accept it unquoted.
 
-**`authorization`**
+**`authorizations`**
 
 | column | type | notes |
 |---|---|---|
@@ -108,7 +110,7 @@ adding a value to a PG enum is a migration that cannot run inside some transacti
 Indexes: PK on `id`; `(merchant_id, created_at DESC)`; a **partial** index
 `(expires_at) WHERE status = 'AUTHORIZED'` so the expiry sweeper never scans terminal rows.
 
-**`idempotency_record`**
+**`idempotency_records`**
 
 | column | type | notes |
 |---|---|---|
@@ -119,7 +121,7 @@ Indexes: PK on `id`; `(merchant_id, created_at DESC)`; a **partial** index
 | `state` | `varchar(16)` | `IN_PROGRESS` \| `COMPLETED` |
 | `lease_expires_at` | `timestamptz` | crash recovery (§3.4) |
 | `attempts` | `int` | |
-| `downstream_attempted` | `boolean` | did we ever put bytes on the wire? Drives the unresolved-attempt gauge (§3.7) |
+| `downstream_attempted` | `boolean` | may bytes have reached the acquirer? Set when the key is claimed, since a claim is only taken in order to send, and cleared only when the call provably never left the process. Drives the unresolved-attempt gauge (§3.7) |
 | `response_status` | `int` | stored verbatim for replay |
 | `response_body` | `text` | **`text`, not `jsonb`** — we replay the exact bytes we sent the first time; `jsonb` normalises key order and whitespace, so a replay would not be byte-identical |
 | `created_at`, `expires_at` | `timestamptz` | 24h TTL |
@@ -127,7 +129,7 @@ Indexes: PK on `id`; `(merchant_id, created_at DESC)`; a **partial** index
 Indexes: the unique pair; `(state, lease_expires_at)` for takeover/sweep; `(expires_at)`
 for purge.
 
-**`authorization_event`** — append-only audit trail: `id`, `authorization_id`,
+**`authorization_events`** — append-only audit trail: `id`, `authorization_id`,
 `type`, `from_status`, `to_status`, `correlation_id`, `created_at`, `detail` (text).
 Never updated, never deleted. Cheap to write, and the first thing anyone asks for when a
 merchant disputes what happened.

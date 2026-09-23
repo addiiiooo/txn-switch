@@ -28,7 +28,7 @@ class IdempotencyRecordTest {
     assertThat(record.authorizationId()).isEqualTo(AUTHORIZATION_ID);
     assertThat(record.state()).isEqualTo(IdempotencyState.IN_PROGRESS);
     assertThat(record.attempts()).isEqualTo(1);
-    assertThat(record.downstreamAttempted()).isFalse();
+    assertThat(record.downstreamAttempted()).isTrue();
     assertThat(record.leaseExpiresAt()).isEqualTo(NOW.plus(LEASE));
     assertThat(record.expiresAt()).isEqualTo(NOW.plus(TTL));
     assertThat(record.responseStatus()).isEmpty();
@@ -55,11 +55,19 @@ class IdempotencyRecordTest {
   }
 
   @Test
+  void releasingCanRecordThatNothingWasEverSent() {
+    IdempotencyRecord record = claim();
+
+    record.releaseLease(NOW.plusSeconds(3), false);
+
+    assertThat(record.downstreamAttempted()).isFalse();
+  }
+
+  @Test
   void releasingTheLeaseKeepsTheRecordAndItsPreAllocatedId() {
     IdempotencyRecord record = claim();
 
-    record.markDownstreamAttempted();
-    record.releaseLease(NOW.plusSeconds(3));
+    record.releaseLease(NOW.plusSeconds(3), true);
 
     assertThat(record.state()).isEqualTo(IdempotencyState.IN_PROGRESS);
     assertThat(record.authorizationId()).isEqualTo(AUTHORIZATION_ID);
@@ -87,7 +95,7 @@ class IdempotencyRecordTest {
     assertThatIllegalStateException().isThrownBy(() -> record.complete(201, "{}"));
     assertThatIllegalStateException().isThrownBy(() -> record.renewLease(NOW, LEASE));
 
-    record.releaseLease(NOW.plusSeconds(1));
+    record.releaseLease(NOW.plusSeconds(1), false);
     assertThat(record.isCompleted()).isTrue();
   }
 
@@ -102,7 +110,7 @@ class IdempotencyRecordTest {
   @Test
   void aSnapshotRoundTripPreservesEveryField() {
     IdempotencyRecord record = claim();
-    record.markDownstreamAttempted();
+    record.releaseLease(NOW.plusSeconds(1), false);
     record.complete(201, "{}");
 
     IdempotencySnapshot snapshot = record.snapshot();
