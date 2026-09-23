@@ -286,6 +286,20 @@ class AuthorizationApiIT extends IntegrationTest {
   }
 
   @Test
+  void theApiDocumentsItselfAndDoesNotAdvertiseTheSimulator() {
+    ResponseEntity<String> apiDocs = rest.getForEntity("/v3/api-docs", String.class);
+
+    assertThat(apiDocs.getStatusCode()).isEqualTo(HttpStatus.OK);
+    assertThat(apiDocs.getBody())
+        .contains("/v1/authorizations")
+        .contains("/v1/authorizations/{id}/capture")
+        .as("the simulator is a demo affordance, not part of the API")
+        .doesNotContain("__simulator");
+    assertThat(rest.getForEntity("/swagger-ui.html", String.class).getStatusCode())
+        .isIn(HttpStatus.OK, HttpStatus.FOUND, HttpStatus.MOVED_PERMANENTLY);
+  }
+
+  @Test
   void aGeneratedCorrelationIdIsReturnedWhenNoneIsSupplied() {
     ResponseEntity<String> response = authorize("key-correlation-2", "4111111111111111");
 

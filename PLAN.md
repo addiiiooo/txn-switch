@@ -560,10 +560,14 @@ and why I am paying it rather than annotating the aggregate.
 
 Everything via environment variables with working local defaults; no secrets in the repo.
 
-`DB_URL`, `DB_USERNAME`, `DB_PASSWORD`, `SERVER_PORT`, `ACQUIRER_BASE_URL`,
-`ACQUIRER_CONNECT_TIMEOUT_MS`, `ACQUIRER_READ_TIMEOUT_MS`, `ACQUIRER_MAX_ATTEMPTS`,
-`SIMULATOR_ENABLED`, `IDEMPOTENCY_TTL`, `IDEMPOTENCY_LEASE_TTL`, `AUTH_HOLD_TTL`,
-`SUPPORTED_CURRENCIES`, `CARD_FINGERPRINT_HMAC_KEY`, `API_KEYS`, `PROBLEM_TYPE_BASE_URI`.
+`DB_URL`, `DB_USERNAME`, `DB_PASSWORD`, `DB_POOL_SIZE`, `SERVER_PORT`, `ACQUIRER_NAME`,
+`ACQUIRER_BASE_URL`, `ACQUIRER_CONNECT_TIMEOUT`, `ACQUIRER_READ_TIMEOUT`,
+`ACQUIRER_MAX_ATTEMPTS`, `SIMULATOR_ENABLED`, `IDEMPOTENCY_TTL`, `IDEMPOTENCY_LEASE_TTL`,
+`IDEMPOTENCY_UNRESOLVED_GRACE`, `AUTH_HOLD_TTL`, `SUPPORTED_CURRENCIES`,
+`CARD_FINGERPRINT_KEY`, `API_KEYS`, `PROBLEM_TYPE_BASE_URI`.
+
+(Corrected against `application.yml` after implementation: the names above are the ones the
+configuration actually reads. The first draft of this section invented three of them.)
 
 ### 10.1 Authentication — a resolved credential, not a trusted header
 

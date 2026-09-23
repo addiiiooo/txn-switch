@@ -113,7 +113,7 @@ resilience4j:
       acquirer:
         # Three attempts at 800ms each plus jittered backoff: a worst case of about 2.5s,
         # which is the number the lease TTL is set against.
-        max-attempts: 3
+        max-attempts: ${ACQUIRER_MAX_ATTEMPTS:3}
         wait-duration: 50ms
         enable-exponential-backoff: true
         exponential-backoff-multiplier: 2
