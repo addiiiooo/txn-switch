@@ -13,6 +13,8 @@ import com.txnswitch.domain.acquirer.AcquirerDecision;
 import io.github.resilience4j.circuitbreaker.CallNotPermittedException;
 import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
 import io.github.resilience4j.retry.annotation.Retry;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
 import java.net.ConnectException;
 import java.net.http.HttpConnectTimeoutException;
 import java.net.http.HttpTimeoutException;
@@ -47,12 +49,17 @@ public class HttpAcquirerClient implements AcquirerGateway {
   private final RestClient restClient;
   private final AcquirerEndpoint endpoint;
   private final String acquirerName;
+  private final MeterRegistry meters;
 
   public HttpAcquirerClient(
-      RestClient acquirerRestClient, AcquirerEndpoint endpoint, AcquirerProperties properties) {
+      RestClient acquirerRestClient,
+      AcquirerEndpoint endpoint,
+      AcquirerProperties properties,
+      MeterRegistry meters) {
     this.restClient = acquirerRestClient;
     this.endpoint = endpoint;
     this.acquirerName = properties.name();
+    this.meters = meters;
   }
 
   @Override
@@ -110,12 +117,15 @@ public class HttpAcquirerClient implements AcquirerGateway {
     return new Acknowledgement(acquirerName, message.reference());
   }
 
+  /** Times one attempt, which is the thing worth measuring: the retry budget sits above this. */
   private <T> T post(
       String path,
       String idempotencyKey,
       String correlationId,
       Object body,
       Class<T> responseType) {
+    Timer.Sample sample = Timer.start(meters);
+    String result = "success";
     try {
       return restClient
           .post()
@@ -126,9 +136,18 @@ public class HttpAcquirerClient implements AcquirerGateway {
           .retrieve()
           .body(responseType);
     } catch (RestClientResponseException e) {
+      result = "http_" + e.getStatusCode().value();
       throw translateStatus(e);
     } catch (ResourceAccessException e) {
+      result = "transport_failure";
       throw translateTransport(e);
+    } finally {
+      sample.stop(
+          Timer.builder("txnswitch.acquirer.call.duration")
+              .description("One attempt against the acquirer")
+              .tag("operation", path.substring(1))
+              .tag("result", result)
+              .register(meters));
     }
   }
 

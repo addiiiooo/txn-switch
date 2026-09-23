@@ -7,6 +7,8 @@ import com.txnswitch.application.exception.IdempotencyKeyReuseException;
 import com.txnswitch.application.exception.PartialCaptureNotSupportedException;
 import com.txnswitch.application.port.AcquirerException;
 import com.txnswitch.application.port.AcquirerGateway;
+import com.txnswitch.application.port.AcquirerProtocolException;
+import com.txnswitch.application.port.AcquirerTimeoutException;
 import com.txnswitch.application.port.AuthorizationRepository;
 import com.txnswitch.config.AuthorizationProperties;
 import com.txnswitch.domain.acquirer.AcquirerDecision;
@@ -20,6 +22,7 @@ import com.txnswitch.domain.card.Pan;
 import com.txnswitch.domain.idempotency.IdempotencyRecord;
 import com.txnswitch.domain.money.InvalidCurrencyException;
 import com.txnswitch.domain.money.Money;
+import io.micrometer.core.instrument.Timer;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.YearMonth;
@@ -47,6 +50,7 @@ public class AuthorizationService {
   private final AuthorizationRepository authorizations;
   private final AcquirerGateway acquirer;
   private final CardFingerprinter fingerprinter;
+  private final AuthorizationMetrics metrics;
   private final AuthorizationProperties properties;
   private final Set<Currency> supportedCurrencies;
   private final Clock clock;
@@ -57,6 +61,7 @@ public class AuthorizationService {
       AuthorizationRepository authorizations,
       AcquirerGateway acquirer,
       CardFingerprinter fingerprinter,
+      AuthorizationMetrics metrics,
       AuthorizationProperties properties,
       Clock clock) {
     this.idempotency = idempotency;
@@ -64,6 +69,7 @@ public class AuthorizationService {
     this.authorizations = authorizations;
     this.acquirer = acquirer;
     this.fingerprinter = fingerprinter;
+    this.metrics = metrics;
     this.properties = properties;
     this.supportedCurrencies = properties.currencies();
     this.clock = clock;
@@ -77,6 +83,7 @@ public class AuthorizationService {
    */
   public AuthorizeResult authorize(
       AuthorizeCommand command, Function<Authorization, String> renderResponse) {
+    Timer.Sample sample = metrics.startAuthorization();
     // Validate before claiming anything: a malformed request should not consume a key.
     Money amount = Money.of(command.amountMinorUnits(), command.currencyCode());
     requireSupportedCurrency(amount);
@@ -103,13 +110,18 @@ public class AuthorizationService {
     switch (outcome) {
       case ClaimOutcome.Claimed claimed -> claim = claimed.record();
       case ClaimOutcome.Replay replay -> {
+        metrics.record(sample, "REPLAYED", true);
         return new AuthorizeResult.Replayed(replay.httpStatus(), replay.body());
       }
-      case ClaimOutcome.FingerprintMismatch ignored ->
-          throw new IdempotencyKeyReuseException(command.idempotencyKey());
-      case ClaimOutcome.InProgress ignored ->
-          throw new IdempotencyInProgressException(
-              command.idempotencyKey(), idempotency.retryAfterSeconds());
+      case ClaimOutcome.FingerprintMismatch ignored -> {
+        metrics.recordIdempotencyConflict("fingerprint_mismatch");
+        throw new IdempotencyKeyReuseException(command.idempotencyKey());
+      }
+      case ClaimOutcome.InProgress ignored -> {
+        metrics.recordIdempotencyConflict("in_progress");
+        throw new IdempotencyInProgressException(
+            command.idempotencyKey(), idempotency.retryAfterSeconds());
+      }
     }
 
     // A takeover reuses the claim's id, which may differ from the one just generated.
@@ -134,6 +146,7 @@ public class AuthorizationService {
       // Release rather than delete: the pre-allocated id must survive so the client's retry
       // with the same key deduplicates at the acquirer instead of creating a second hold.
       idempotency.release(claim.id(), e.outcomeUnknown());
+      metrics.recordFailure(sample, failureReason(e));
       throw e;
     }
 
@@ -172,6 +185,7 @@ public class AuthorizationService {
         201,
         body,
         command.correlationId());
+    metrics.record(sample, authorization.status().name(), false);
     return new AuthorizeResult.Created(authorization, body);
   }
 
@@ -241,6 +255,16 @@ public class AuthorizationService {
       Authorization current = get(id, merchantId);
       throw new IllegalTransitionException(current.status(), attempted);
     }
+  }
+
+  /** A bounded set of tag values: three exception types, never a message. */
+  private static String failureReason(AcquirerException failure) {
+    if (failure instanceof AcquirerTimeoutException) {
+      return "acquirer_timeout";
+    }
+    return failure instanceof AcquirerProtocolException
+        ? "acquirer_protocol"
+        : "acquirer_unavailable";
   }
 
   private void requireSupportedCurrency(Money amount) {

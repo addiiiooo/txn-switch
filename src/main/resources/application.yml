@@ -44,14 +44,29 @@ management:
       probes:
         enabled: true
       show-details: always
+      group:
+        # Liveness deliberately excludes the database: a process that is fine should not be
+        # restarted because a dependency it cannot fix is down. Readiness includes it, so
+        # the instance is taken out of rotation instead and comes back on its own.
+        liveness:
+          include: livenessState
+        readiness:
+          include: readinessState,db
   health:
-    # Liveness deliberately excludes the database: a process that is fine should not be
-    # restarted because a dependency it cannot fix is down. Readiness includes it, so the
-    # instance is taken out of rotation instead.
     livenessstate:
       enabled: true
     readinessstate:
       enabled: true
+  metrics:
+    tags:
+      application: ${spring.application.name}
+    distribution:
+      percentiles-histogram:
+        txnswitch.authorization.duration: true
+        txnswitch.acquirer.call.duration: true
+      slo:
+        txnswitch.authorization.duration: 50ms,100ms,250ms,500ms,1s,2s,5s
+        txnswitch.acquirer.call.duration: 25ms,50ms,100ms,250ms,500ms,1s
 
 logging:
   level:

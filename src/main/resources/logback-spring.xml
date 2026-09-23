@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Every line carries the correlation id, so "order 1234 failed at 10:15" is one query
+  rather than an investigation. The id is put in the MDC by CorrelationIdFilter and is
+  the same value returned to the caller and stored on the audit row.
+-->
+<configuration>
+  <include resource="org/springframework/boot/logging/logback/defaults.xml"/>
+
+  <property name="TXN_SWITCH_PATTERN"
+            value="%d{yyyy-MM-dd'T'HH:mm:ss.SSSXXX} %5p [%X{correlationId:-no-correlation-id}] %logger{40} - %m%n${LOG_EXCEPTION_CONVERSION_WORD:-%wEx}"/>
+
+  <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+    <encoder>
+      <pattern>${TXN_SWITCH_PATTERN}</pattern>
+      <charset>UTF-8</charset>
+    </encoder>
+  </appender>
+
+  <root level="INFO">
+    <appender-ref ref="CONSOLE"/>
+  </root>
+</configuration>
