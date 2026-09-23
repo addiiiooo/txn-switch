@@ -1,0 +1,28 @@
+# Build output
+target/
+*.jar
+*.war
+!.mvn/wrapper/maven-wrapper.jar
+
+# IDE
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+.settings/
+.classpath
+.project
+nbproject/
+
+# OS
+.DS_Store
+
+# Local environment / secrets — never commit these
+.env
+.env.*
+!.env.example
+
+# Logs and test scratch
+*.log
+logs/
