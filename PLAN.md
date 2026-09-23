@@ -42,7 +42,7 @@ The domain package contains no Spring and no JPA annotations (enforced by a test
 | `AuthorizationStatus` | enum | `AUTHORIZED`, `DECLINED`, `CAPTURED`, `VOIDED`, `EXPIRED`. |
 | `Money` | value object | `long minorUnits` + `java.util.Currency`. See ADR-0005. |
 | `Pan` | value object | Luhn-checked, 12–19 digits. **Never persisted, never logged.** `toString()` is masked. |
-| `CardDetails` | value object | What we *do* keep: brand, last4, expiry, HMAC fingerprint. |
+| `CardDetails` | value object | What we *do* keep: BIN (first 6), last 4, brand, expiry, HMAC fingerprint. |
 | `AcquirerDecision` | sealed interface | `Approved` \| `Declined` \| `Failed(retryable)`. Pattern-matched, so a new outcome breaks compilation rather than falling through a default branch. |
 | `AuthorizationEvent` | value object | Append-only audit record of one transition. |
 | `IdempotencyRecord` | aggregate root | The dedup ledger. See §3. |
@@ -98,7 +98,7 @@ adding a value to a PG enum is a migration that cannot run inside some transacti
 | `amount_minor` | `bigint` | `CHECK (amount_minor > 0)` |
 | `currency` | `char(3)` | ISO-4217 alpha |
 | `status` | `varchar(16)` | `CHECK (status IN (...))` |
-| `card_brand`, `card_last4`, `card_exp_month`, `card_exp_year` | | no PAN, ever |
+| `card_bin`, `card_last4`, `card_brand`, `card_exp_month`, `card_exp_year` | | first 6 + last 4 only — the truncation PCI DSS explicitly permits. The middle digits are never written anywhere |
 | `card_fingerprint` | `char(64)` | HMAC-SHA256(PAN), key from env |
 | `acquirer_name`, `acquirer_reference`, `approval_code` | | |
 | `decline_code`, `decline_message` | | null unless `DECLINED` |
@@ -119,7 +119,7 @@ Indexes: PK on `id`; `(merchant_id, created_at DESC)`; a **partial** index
 | `state` | `varchar(16)` | `IN_PROGRESS` \| `COMPLETED` |
 | `lease_expires_at` | `timestamptz` | crash recovery (§3.4) |
 | `attempts` | `int` | |
-| `downstream_attempted` | `boolean` | did we ever put bytes on the wire? |
+| `downstream_attempted` | `boolean` | did we ever put bytes on the wire? Drives the unresolved-attempt gauge (§3.7) |
 | `response_status` | `int` | stored verbatim for replay |
 | `response_body` | `text` | **`text`, not `jsonb`** — we replay the exact bytes we sent the first time; `jsonb` normalises key order and whitespace, so a replay would not be byte-identical |
 | `created_at`, `expires_at` | `timestamptz` | 24h TTL |
@@ -141,14 +141,18 @@ Base path `/v1`. Media types: `application/json` in, `application/json` out,
 
 | Method | Path | Required headers | Success | Notable failures |
 |---|---|---|---|---|
-| `POST` | `/v1/authorizations` | `Idempotency-Key`, `X-Merchant-Id` | `201` + `Location`; replay → original status + `Idempotency-Replayed: true` | `400` validation, `422` key reuse, `409` key in progress, `503/504` acquirer |
-| `GET` | `/v1/authorizations/{id}` | `X-Merchant-Id` | `200` | `404` |
-| `POST` | `/v1/authorizations/{id}/capture` | `X-Merchant-Id` | `200` | `404`, `409` illegal transition / expired, `422` partial capture |
-| `POST` | `/v1/authorizations/{id}/void` | `X-Merchant-Id` | `200` | `404`, `409` |
+| `POST` | `/v1/authorizations` | `Authorization: Bearer`, `Idempotency-Key` | `201` + `Location`; replay → original status + `Idempotency-Replayed: true` | `401`, `400` validation, `422` key reuse, `409` key in progress, `503/504` acquirer |
+| `GET` | `/v1/authorizations/{id}` | `Authorization: Bearer` | `200` | `401`, `404` |
+| `POST` | `/v1/authorizations/{id}/capture` | `Authorization: Bearer` | `200` | `401`, `404`, `409` illegal transition / expired, `422` partial capture |
+| `POST` | `/v1/authorizations/{id}/void` | `Authorization: Bearer` | `200` | `401`, `404`, `409` |
 | `GET` | `/actuator/health/liveness` \| `/readiness` | — | `200` / `503` | readiness fails when Postgres is unreachable |
 | `GET` | `/actuator/prometheus` | — | `200` | |
 | `GET` | `/v3/api-docs`, `/swagger-ui.html` | — | `200` | springdoc |
 | `POST` | `/__simulator/acquirer/config` | — | `200` | demo-only, flag-guarded (§4.1) |
+
+Every `/v1` request carries `Authorization: Bearer <api-key>`. The merchant identity is
+**derived from the credential** (§10.1); there is no header a caller can set to become
+another merchant. `/actuator/**` and `/__simulator/**` are deliberately unauthenticated.
 
 Authorize request:
 
@@ -174,7 +178,7 @@ Authorize response (`201`):
   "currency": "USD",
   "merchantId": "m_demo",
   "merchantReference": "order-1234",
-  "card": { "brand": "VISA", "last4": "1111", "expiryMonth": 12, "expiryYear": 2030 },
+  "card": { "brand": "VISA", "bin": "411111", "last4": "1111", "expiryMonth": 12, "expiryYear": 2030 },
   "acquirer": { "name": "sim-acquirer", "reference": "ACQ-7F3C21", "approvalCode": "A1B2C3" },
   "createdAt": "2026-09-23T10:15:00Z",
   "expiresAt": "2026-09-30T10:15:00Z"
@@ -312,17 +316,20 @@ sequenceDiagram
 
 ### 3.7 Background maintenance
 
-Three `@Scheduled` jobs, each claiming rows with `FOR UPDATE SKIP LOCKED` so more than one
+Two `@Scheduled` jobs, each claiming rows with `FOR UPDATE SKIP LOCKED` so more than one
 instance is safe:
 
 1. **Expiry** — `AUTHORIZED` past `expires_at` → `EXPIRED` + event.
 2. **Purge** — idempotency records past their 24h TTL.
-3. **Reversal** (see §11, last and cuttable) — records stuck `IN_PROGRESS` with
-   `downstream_attempted = true` and an expired lease older than a grace period: send a
-   reversal to the acquirer for the pre-allocated id, then complete the record with a
-   stored `409 IDEMPOTENT_REQUEST_ABANDONED`. This is the compensating action for "we may
-   have created a hold we never recorded". Without it, that hold leaks until it expires at
-   the issuer.
+
+There is a third thing a production switch would do and this one does not: **reverse
+unknown-outcome attempts**. If the acquirer approved a hold and the answer never reached
+us, that hold leaks until the issuer expires it. Automatic compensation is out of scope
+(§12), so instead of pretending the case does not exist, we make it *visible*: a
+`txnswitch_unresolved_attempts` gauge counts idempotency records still `IN_PROGRESS` with
+`downstream_attempted = true` and a lease expired beyond a grace period. The number should
+be zero; if it is not, someone has money held that we have no record of, and the gauge is
+what tells them.
 
 ---
 
@@ -398,10 +405,12 @@ and the alternative.
 | 10 | Postgres unreachable | Readiness `503`, liveness stays `200` (do not restart a healthy process because a dependency is down) | `HealthProbeIT` |
 | 11 | Concurrent capture + void | One wins; the loser sees the version conflict, re-reads, and gets `409 INVALID_STATE_TRANSITION` | `ConcurrentTransitionIT` |
 | 12 | Capture after the hold expired | `409 AUTHORIZATION_EXPIRED` even if the sweeper has not run | `AuthorizationTest` (unit) |
-| 13 | Unknown outcome never retried by the client | Reversal sweeper compensates (§3.7) | `ReversalSweeperIT` |
+| 13 | Unknown outcome never retried by the client | The hold leaks until the issuer expires it. Not compensated automatically (out of scope); surfaced by the `txnswitch_unresolved_attempts` gauge | `UnresolvedAttemptsGaugeIT` |
 | 14 | Idempotency key reused after its 24h TTL | Treated as a new request — documented, not a bug, but documented loudly | `docs/errors.md` |
-| 15 | PAN in a log line or an error body | Must never happen | `PanRedactionTest` asserts against a captured log appender and every problem body |
+| 15 | Full PAN in a log line, a response body or a database column | Must never happen | `PanLeakageIT` — captures every log line emitted during an authorization, scans every text column of every row via `information_schema`, and scans every response body |
 | 16 | Amount overflow / negative / fractional | Rejected at the edge; `long` minor units bounded at 10^13 | `MoneyTest` |
+| 17 | Unknown or missing API key | `401` with no hint about which keys exist; no merchant is resolved, so nothing is queried | `AuthenticationIT` |
+| 18 | Valid key, someone else's authorization id | `404`, not `403` — we do not confirm existence across tenants | `AuthenticationIT` |
 
 ---
 
@@ -420,6 +429,7 @@ and the alternative.
   * `txnswitch_authorization_duration_seconds` (histogram, SLO buckets)
   * `txnswitch_acquirer_call_duration_seconds{result}`
   * `txnswitch_idempotency_conflicts_total{kind}`
+  * `txnswitch_unresolved_attempts` (gauge — see §3.7; should be 0)
   * `resilience4j_circuitbreaker_state{name="acquirer"}` (auto-exported)
 
 ---
@@ -450,7 +460,15 @@ query (`EXPLAIN` assertion — cheap, and it catches the day someone drops the i
 ### 7.3 API integration (Testcontainers + random port)
 
 Full Spring context, real HTTP client, real loopback call to the simulator. Covers the
-endpoint table, the error catalogue, the replay contract, and the header contract.
+endpoint table, the error catalogue, the replay contract, and the header contract, plus
+two tests that exist to catch a specific class of mistake:
+
+* `AuthenticationIT` — missing key, unknown key, and a valid key reaching for another
+  merchant's authorization (`404`, not `403`).
+* `PanLeakageIT` — drives a real authorization, then asserts the full PAN appears in **no**
+  captured log line, **no** response or problem body, and **no** column of any row (found
+  by querying `information_schema.columns` and casting everything to text, so a column
+  added next year is covered without anyone remembering to update the test).
 
 ### 7.4 Concurrency
 
@@ -543,19 +561,56 @@ Everything via environment variables with working local defaults; no secrets in 
 `DB_URL`, `DB_USERNAME`, `DB_PASSWORD`, `SERVER_PORT`, `ACQUIRER_BASE_URL`,
 `ACQUIRER_CONNECT_TIMEOUT_MS`, `ACQUIRER_READ_TIMEOUT_MS`, `ACQUIRER_MAX_ATTEMPTS`,
 `SIMULATOR_ENABLED`, `IDEMPOTENCY_TTL`, `IDEMPOTENCY_LEASE_TTL`, `AUTH_HOLD_TTL`,
-`SUPPORTED_CURRENCIES`, `CARD_FINGERPRINT_HMAC_KEY`.
+`SUPPORTED_CURRENCIES`, `CARD_FINGERPRINT_HMAC_KEY`, `API_KEYS`, `PROBLEM_TYPE_BASE_URI`.
 
-Card data posture, stated plainly because a payments reviewer will look for it:
+### 10.1 Authentication — a resolved credential, not a trusted header
+
+An `X-Merchant-Id` header that the caller sets is not a trust boundary; it is a comment.
+Anyone who can reach the service can be any merchant, and every "scoped by merchant id"
+guarantee in this document evaporates. So the merchant identity is **derived from a
+credential**:
+
+* `Authorization: Bearer <api-key>` on every `/v1` request. A `OncePerRequestFilter`
+  resolves the key to a `MerchantPrincipal` and puts it in the request; **nothing
+  downstream reads a merchant id from anywhere else**, and the header is gone.
+* Keys come from `API_KEYS` (`key:merchantId,key:merchantId`). The local default is
+  `sk_local_demo:m_demo` — a development credential, published on purpose, and the app
+  logs a warning at startup if it is still in use outside the `local` profile. No secret
+  is committed.
+* Keys are SHA-256 hashed once at startup and looked up by hash, so there is no linear
+  scan over configured keys and no timing oracle.
+* Missing credential → `401 MISSING_CREDENTIALS`; unknown → `401 INVALID_CREDENTIALS`,
+  with no hint about which keys exist. An authorization belonging to another merchant is
+  `404`, never `403`: confirming existence across tenants is itself a leak.
+* `/actuator/**` and `/__simulator/**` are unauthenticated by design, on the assumption of
+  network-level protection. Said out loud here and in the README rather than left for a
+  reviewer to find.
+
+**What this is not.** A static key map has no rotation, no scopes, no expiry, and no
+revocation without a restart, and the keys sit in the process environment. Real
+authentication — Spring Security with OAuth2 client credentials, or mTLS with the
+certificate subject as the principal — terminates at exactly this seam: it replaces the
+resolver behind `MerchantPrincipal` and touches nothing else. That is the point of putting
+a seam here instead of a header. (Spring Security itself is not in the agreed stack, so
+the filter is hand-rolled; §12 lists the gap.)
+
+### 10.2 Card data posture
 
 * The PAN is accepted, validated, forwarded to the acquirer, and then **discarded**. It is
   never written to the database, never logged, never echoed in a response or a problem
-  document. `Pan.toString()` returns `************1111`.
-* We keep brand, last4, expiry and an HMAC-SHA256 fingerprint. The HMAC key comes from the
-  environment; the local default is clearly marked dev-only and the app logs a warning at
-  startup if the default is still in use outside the `local` profile.
-* Authentication is **out of scope**: `X-Merchant-Id` stands in for an authenticated
-  principal, and the README says so rather than pretending otherwise. Every query is
-  scoped by merchant id anyway, so adding real auth is a filter, not a refactor.
+  document, and never put in a URL.
+* What is persisted is the **BIN (first 6) and the last 4** — the truncation PCI DSS
+  explicitly permits — plus brand, expiry, and an HMAC-SHA256 fingerprint of the full PAN.
+  The middle digits are never stored in any form that can be reversed to a PAN; the
+  fingerprint is keyed, so it is not a rainbow-table target the way a bare SHA-256 of a
+  16-digit number would be.
+* `Pan` is a value object whose `toString()` returns `411111******1111`. The only accessor
+  that returns the full value is named `exposeForAcquirer()`, so it is greppable and shows
+  up in review; exactly one call site uses it.
+* The HMAC key comes from the environment; the local default is marked dev-only and warned
+  about at startup outside the `local` profile.
+* `PanLeakageIT` proves the above against logs, response bodies and every database column,
+  rather than asserting it in prose.
 * CVV, 3-D Secure, tokenisation and network tokens are out of scope.
 
 ---
@@ -574,45 +629,57 @@ Conventional commits, one logical change each:
 8. `feat(idempotency): key claim, fingerprint, lease and replay`
 9. `feat(api): authorize, get, capture and void endpoints`
 10. `feat(api): RFC 9457 problem responses and error catalogue`
-11. `feat(observability): correlation id, health probes and metrics`
-12. `test: concurrency, resilience and lease-takeover suites`
-13. `feat(maintenance): expiry, purge and reversal sweepers` ← cuttable (§12)
-14. `build: docker multi-stage image and compose stack`
-15. `ci: github actions for spotless, verify, coverage and docker build`
-16. `docs: README`
-
-Step 13 is deliberately last. If it threatens the time budget or the coverage gate, it is
-dropped and recorded under "Out of scope" instead of being half-built.
+11. `feat(auth): resolve merchant identity from an API key`
+12. `feat(observability): correlation id, health probes and metrics`
+13. `feat(maintenance): expiry and purge sweepers`
+14. `test: concurrency, resilience, lease-takeover and PAN-leakage suites`
+15. `build: docker multi-stage image and compose stack`
+16. `ci: github actions for spotless, verify, coverage and docker build`
+17. `docs: README`
 
 ---
 
 ## 12. Out of scope (will be repeated in the README)
 
-Settlement and clearing · refunds · partial and multiple capture · multi-acquirer routing
-and failover · real acquirer protocols (ISO 8583, card-scheme APIs) · authentication,
-authorization and rate limiting · 3-D Secure, CVV handling, tokenisation · fraud scoring ·
-webhooks and merchant callbacks · multi-region and leader election · PCI-DSS compliance as
-such (the posture in §10 is hygiene, not certification) · load and performance testing —
-**no benchmark numbers will appear anywhere unless I actually ran the benchmark**.
+Two gaps are deliberate and worth stating in full, because they are the ones a payments
+reviewer will look for:
+
+**Reversal of unknown-outcome attempts.** When the acquirer approves a hold and the answer
+never reaches us, that hold leaks until the issuer expires it. The fix is a sweeper that
+claims idempotency records still `IN_PROGRESS` with `downstream_attempted = true` and an
+expired lease (`FOR UPDATE SKIP LOCKED`), sends a reversal for the pre-allocated
+authorization id — which the acquirer already knows, so the reversal is itself idempotent —
+and then completes the record with a terminal error so the key cannot be reused. It is not
+built. The leak is instead made visible by the `txnswitch_unresolved_attempts` gauge.
+
+**Real authentication.** The API-key map in §10.1 is a genuine trust boundary but a
+primitive one: no rotation, no scopes, no expiry, no revocation without a restart.
+Production would put Spring Security with OAuth2 client credentials or mTLS behind the same
+`MerchantPrincipal` seam.
+
+Also out of scope: settlement and clearing · refunds · partial and multiple capture ·
+multi-acquirer routing and failover · real acquirer protocols (ISO 8583, card-scheme APIs)
+· authorization scopes and rate limiting · 3-D Secure, CVV handling, tokenisation · fraud
+scoring · webhooks and merchant callbacks · multi-region and leader election · PCI-DSS
+compliance as such (the posture in §10.2 is hygiene, not certification) · load and
+performance testing — **no benchmark numbers will appear anywhere unless I actually ran
+the benchmark**.
 
 ---
 
-## 13. Decisions I would like you to confirm before I build
+## 13. Review outcome (2026-09-23)
 
-These are judgment calls I have made and can defend, but they change the contract, so say
-the word if you disagree:
+Reviewed and accepted, with four changes now folded into the sections above:
 
-1. **Concurrent duplicates get `409`, not a blocked wait.** 50-in-parallel yields 1×`201`
-   + 49×`409 IDEMPOTENCY_REQUEST_IN_PROGRESS`, and the client's retry replays the original
-   response. The alternative — block the loser until the winner commits, then replay — is
-   friendlier but holds request threads hostage to the acquirer's latency. (ADR-0002.)
-2. **A decline is `201` with `status: DECLINED`**, not `402`. (§2.1, ADR-0003.)
-3. **Full PAN accepted in the request** (validated, forwarded, never stored or logged)
-   rather than a token-only API. Token-only would be less realistic for a *switch*.
-4. **The reversal sweeper (§3.7, step 13) is in, but cuttable.** It is the honest answer to
-   "the acquirer may have approved something we never recorded"; it is also the piece most
-   likely to bloat. Say if you would rather I drop it and list it as a known gap.
-5. **MIT copyright line reads `Copyright (c) 2026 Aditya Sumanth`** — correct me if that
-   is not the name you want, and tell me the GitHub `owner/repo` so the problem-type URIs
-   and CI badges point somewhere real (they currently use a stable, non-dereferenceable
-   `https://txn-switch.dev/problems/...` namespace).
+1. **Reversal sweeper cut.** `IDEMPOTENT_REQUEST_ABANDONED` removed from the catalogue;
+   the gap is documented in §12 and made observable by a gauge (§3.7).
+2. **Card storage reduced to BIN + last 4** (§10.2), proven by `PanLeakageIT` against
+   logs, response bodies and every database column.
+3. **`X-Merchant-Id` removed entirely** in favour of an API-key-resolved
+   `MerchantPrincipal` (§10.1).
+4. **Repository is `addiiiooo/txn-switch`**; problem `type` URIs now point at the
+   `docs/errors.md` anchors in that repository.
+
+Decisions carried forward unchanged: concurrent duplicates get `409` rather than a blocked
+wait (ADR-0002); a decline is `201 DECLINED` rather than `402` (ADR-0003); the full PAN is
+accepted in the request rather than a token-only API (§10.2).

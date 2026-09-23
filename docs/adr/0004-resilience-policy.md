@@ -60,7 +60,10 @@ the breaker three times slower to notice an outage.
 retries release the lease and return `504 ACQUIRER_TIMEOUT` or `503 ACQUIRER_UNAVAILABLE`;
 the authorization row is created only when the acquirer gave a definitive answer. What we
 may have leaked — a hold created by a call we never heard back from — is tracked on the
-idempotency record (`downstream_attempted`) and compensated by the reversal sweeper.
+idempotency record (`downstream_attempted`). Automatic compensation (a reversal sweeper)
+is **out of scope**; instead the residual exposure is measured by the
+`txnswitch_unresolved_attempts` gauge, which should be zero. An unmeasured gap is a lie; a
+measured one is a backlog item.
 
 ## Consequences
 

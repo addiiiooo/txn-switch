@@ -17,7 +17,7 @@ and breaks the day someone improves the wording.
 
 | member | notes |
 |---|---|
-| `type` | `https://txn-switch.dev/problems/{code}` — a stable identifier, documented as not necessarily dereferenceable |
+| `type` | `https://github.com/addiiiooo/txn-switch/blob/main/docs/errors.md#{lowercased code}` — dereferences to that code's section; base configurable via `PROBLEM_TYPE_BASE_URI` |
 | `title`, `status`, `detail` | human-readable; `detail` never contains a PAN, a key, or a stack trace |
 | `code` | **`UPPER_SNAKE_CASE`, the contract.** The catalogue in `docs/errors.md` is the normative list |
 | `correlationId` | always present; the same id is in the logs and in `authorization_event` |
@@ -45,6 +45,9 @@ Supporting decisions:
 * **Spring's own failures are mapped too** — malformed JSON, wrong content type,
   unsupported method, missing header — so there is no route through the framework that
   returns a non-problem body. A test walks the catalogue and asserts the content type.
+* **Authentication failures are part of the same contract**: `401 MISSING_CREDENTIALS` and
+  `401 INVALID_CREDENTIALS`, emitted by the API-key filter, which therefore has to write a
+  problem document itself rather than letting the container produce an HTML error page.
 
 ## Consequences
 
@@ -53,9 +56,10 @@ be reviewed on its own. Correlation ids make a production report ("order 1234 fa
 10:15") a single log query.
 
 **Bad.** Every new failure mode costs a catalogue entry and a mapping — deliberate
-friction, to stop the catalogue drifting from the code. The `type` URIs point at a domain
-that is not served; a reviewer may prefer them to resolve to the published docs, which is
-a one-line change once the repository URL is fixed.
+friction, to stop the catalogue drifting from the code. Pinning `type` URIs to
+`blob/main/docs/errors.md` couples the contract to a branch name: if the repository moves
+or the docs are published elsewhere, every previously-emitted `type` becomes a dead link.
+That is why the base is configuration rather than a constant.
 
 ## Verified by
 
