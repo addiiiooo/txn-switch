@@ -50,3 +50,58 @@ management:
 logging:
   level:
     root: INFO
+
+txnswitch:
+  acquirer:
+    name: ${ACQUIRER_NAME:sim-acquirer}
+    # `self` points at the bundled simulator on whatever port this instance bound to.
+    # Point it at a real acquirer and switch the simulator off.
+    base-url: ${ACQUIRER_BASE_URL:self}
+    connect-timeout: ${ACQUIRER_CONNECT_TIMEOUT:300ms}
+    read-timeout: ${ACQUIRER_READ_TIMEOUT:800ms}
+  simulator:
+    enabled: ${SIMULATOR_ENABLED:true}
+
+resilience4j:
+  retry:
+    instances:
+      acquirer:
+        # Three attempts at 800ms each plus jittered backoff: a worst case of about 2.5s,
+        # which is the number the lease TTL is set against.
+        max-attempts: 3
+        wait-duration: 50ms
+        enable-exponential-backoff: true
+        exponential-backoff-multiplier: 2
+        exponential-max-wait-duration: 400ms
+        enable-randomized-wait: true
+        randomized-wait-factor: 0.5
+        # Retrying a read timeout is safe ONLY because every call carries the pre-allocated
+        # authorization id as the acquirer's idempotency key (ADR-0001, ADR-0004).
+        retry-exceptions:
+          - com.txnswitch.application.port.AcquirerTimeoutException
+          - com.txnswitch.application.port.AcquirerUnavailableException
+        ignore-exceptions:
+          # A malformed-request answer will be malformed again. An open breaker must fail
+          # fast, not sleep through three backoffs.
+          - com.txnswitch.application.port.AcquirerProtocolException
+          - io.github.resilience4j.circuitbreaker.CallNotPermittedException
+  circuitbreaker:
+    instances:
+      acquirer:
+        sliding-window-type: COUNT_BASED
+        sliding-window-size: 20
+        minimum-number-of-calls: 10
+        failure-rate-threshold: 50
+        # An acquirer answering in over a second is down for our purposes.
+        slow-call-rate-threshold: 50
+        slow-call-duration-threshold: 1s
+        wait-duration-in-open-state: 10s
+        permitted-number-of-calls-in-half-open-state: 3
+        automatic-transition-from-open-to-half-open-enabled: true
+        register-health-indicator: false
+        record-exceptions:
+          - com.txnswitch.application.port.AcquirerTimeoutException
+          - com.txnswitch.application.port.AcquirerUnavailableException
+        ignore-exceptions:
+          # Our bug or theirs, but not an outage: it must not trip the breaker for everyone.
+          - com.txnswitch.application.port.AcquirerProtocolException

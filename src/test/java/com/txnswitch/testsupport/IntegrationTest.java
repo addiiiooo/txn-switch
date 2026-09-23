@@ -1,6 +1,8 @@
 /* SPDX-License-Identifier: MIT */
 package com.txnswitch.testsupport;
 
+import com.txnswitch.adapter.simulator.AcquirerSimulatorState;
+import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry;
 import java.util.function.Supplier;
 import org.junit.jupiter.api.BeforeEach;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -43,6 +45,10 @@ public abstract class IntegrationTest {
 
   @Autowired protected TransactionTemplate transactionTemplate;
 
+  @Autowired protected AcquirerSimulatorState simulator;
+
+  @Autowired protected CircuitBreakerRegistry circuitBreakers;
+
   @DynamicPropertySource
   static void datasourceProperties(DynamicPropertyRegistry registry) {
     registry.add("spring.datasource.url", POSTGRES::getJdbcUrl);
@@ -54,6 +60,17 @@ public abstract class IntegrationTest {
   void truncateEveryTable() {
     jdbc.execute(
         "TRUNCATE authorization_events, authorizations, idempotency_records RESTART IDENTITY CASCADE");
+  }
+
+  /**
+   * The simulator and the breaker are process-wide mutable state shared by one application context.
+   * Resetting them between tests is what keeps a suite that reuses a context from becoming
+   * order-dependent.
+   */
+  @BeforeEach
+  void resetDownstreamState() {
+    simulator.reset();
+    circuitBreakers.circuitBreaker("acquirer").reset();
   }
 
   /** Runs a block in its own transaction, the way an application service would. */
