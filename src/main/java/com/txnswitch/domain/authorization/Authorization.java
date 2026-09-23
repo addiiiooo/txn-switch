@@ -207,6 +207,24 @@ public final class Authorization {
   }
 
   /**
+   * Checks that a capture would be legal, without performing it.
+   *
+   * <p>Exists so the application can refuse an illegal transition <em>before</em> calling the
+   * acquirer. Capturing an already-captured authorization should not cost a downstream round trip,
+   * and it certainly should not reach the acquirer first and be rejected locally afterwards.
+   */
+  public void ensureCapturable(Instant now) {
+    requireTransitionTo(AuthorizationStatus.CAPTURED);
+    requireNotExpired(now);
+  }
+
+  /** Checks that a void would be legal, without performing it. */
+  public void ensureVoidable(Instant now) {
+    requireTransitionTo(AuthorizationStatus.VOIDED);
+    requireNotExpired(now);
+  }
+
+  /**
    * Captures the full authorized amount.
    *
    * @throws IllegalTransitionException if the current state does not permit a capture
