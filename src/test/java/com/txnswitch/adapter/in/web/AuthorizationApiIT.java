@@ -148,7 +148,13 @@ class AuthorizationApiIT extends IntegrationTest {
     ResponseEntity<String> response = get("/v1/authorizations/not-a-uuid");
 
     assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
-    assertThat(body(response).get("code").asText()).isEqualTo("VALIDATION_FAILED");
+    JsonNode problem = body(response);
+    assertThat(problem.get("code").asText()).isEqualTo("VALIDATION_FAILED");
+    assertThat(problem.get("errors").get(0).get("field").asText()).isEqualTo("id");
+    assertThat(problem.get("errors").get(0).get("message").asText())
+        .as("described in the API's terms, not the implementation's")
+        .isEqualTo("must be a UUID")
+        .doesNotContain("java");
   }
 
   @Test
@@ -172,7 +178,31 @@ class AuthorizationApiIT extends IntegrationTest {
             """);
 
     assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
-    assertThat(body(response).get("code").asText()).isEqualTo("MALFORMED_REQUEST");
+    JsonNode problem = body(response);
+    assertThat(problem.get("code").asText()).isEqualTo("MALFORMED_REQUEST");
+    assertThat(problem.get("errors").get(0).get("field").asText())
+        .as("a client should not have to guess which field was fractional")
+        .isEqualTo("amount");
+    assertThat(problem.get("errors").get(0).get("code").asText()).isEqualTo("TYPE_MISMATCH");
+    assertThat(problem.get("errors").get(0).get("message").asText())
+        .isEqualTo("must be a whole number");
+  }
+
+  @Test
+  void aWrongTypeInANestedFieldIsNamedByItsFullPath() throws Exception {
+    ResponseEntity<String> response =
+        post(
+            "/v1/authorizations",
+            "key-nested-type-1",
+            """
+            {"amount": 1250, "currency": "USD",
+             "card": {"pan": "4111111111111111", "expiryMonth": "twelve", "expiryYear": 2030}}
+            """);
+
+    assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+    JsonNode problem = body(response);
+    assertThat(problem.get("code").asText()).isEqualTo("MALFORMED_REQUEST");
+    assertThat(problem.get("errors").get(0).get("field").asText()).isEqualTo("card.expiryMonth");
   }
 
   @Test

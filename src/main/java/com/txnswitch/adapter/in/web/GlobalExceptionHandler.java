@@ -1,6 +1,8 @@
 /* SPDX-License-Identifier: MIT */
 package com.txnswitch.adapter.in.web;
 
+import com.fasterxml.jackson.databind.JsonMappingException;
+import com.fasterxml.jackson.databind.exc.MismatchedInputException;
 import com.txnswitch.application.exception.AuthorizationNotFoundException;
 import com.txnswitch.application.exception.IdempotencyInProgressException;
 import com.txnswitch.application.exception.IdempotencyKeyReuseException;
@@ -18,6 +20,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.TypeMismatchException;
@@ -180,6 +183,21 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
       HttpHeaders headers,
       HttpStatusCode status,
       WebRequest request) {
+    // Still MALFORMED_REQUEST, as the catalogue promises; but when one field's type is the
+    // problem, the caller is told which, in the shape VALIDATION_FAILED already uses.
+    if (e.getCause() instanceof MismatchedInputException mismatch
+        && !mismatch.getPath().isEmpty()) {
+      ProblemDetail problem =
+          problems.create(ErrorCode.MALFORMED_REQUEST, "A field has the wrong JSON type.");
+      problem.setProperty(
+          "errors",
+          List.of(
+              Map.of(
+                  "field", jsonPath(mismatch.getPath()),
+                  "code", "TYPE_MISMATCH",
+                  "message", expectedType(mismatch.getTargetType()))));
+      return asObject(ResponseEntity.status(ErrorCode.MALFORMED_REQUEST.status()).body(problem));
+    }
     return asObject(
         respond(
             ErrorCode.MALFORMED_REQUEST,
@@ -303,8 +321,44 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
                 "code",
                 "TYPE_MISMATCH",
                 "message",
-                "expected " + String.valueOf(e.getRequiredType()))));
+                expectedType(e.getRequiredType()))));
     return asObject(ResponseEntity.status(ErrorCode.VALIDATION_FAILED.status()).body(problem));
+  }
+
+  /** A field's position in the request body, the way a client would write it: card.expiryMonth. */
+  private static String jsonPath(List<JsonMappingException.Reference> path) {
+    StringBuilder out = new StringBuilder();
+    for (JsonMappingException.Reference reference : path) {
+      if (reference.getFieldName() != null) {
+        out.append(out.isEmpty() ? "" : ".").append(reference.getFieldName());
+      } else if (reference.getIndex() >= 0) {
+        out.append('[').append(reference.getIndex()).append(']');
+      }
+    }
+    return out.toString();
+  }
+
+  /** What a value should have been, in the API's terms rather than the implementation's. */
+  private static String expectedType(Class<?> type) {
+    if (type == null) {
+      return "has the wrong type";
+    }
+    if (type == UUID.class) {
+      return "must be a UUID";
+    }
+    if (type == Long.class || type == long.class || type == Integer.class || type == int.class) {
+      return "must be a whole number";
+    }
+    if (Number.class.isAssignableFrom(type) || type == double.class || type == float.class) {
+      return "must be a number";
+    }
+    if (type == Boolean.class || type == boolean.class) {
+      return "must be true or false";
+    }
+    if (CharSequence.class.isAssignableFrom(type)) {
+      return "must be a string";
+    }
+    return "has the wrong type";
   }
 
   private ResponseEntity<ProblemDetail> respond(ErrorCode code, String detail) {

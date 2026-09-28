@@ -108,6 +108,13 @@ The body is not valid JSON, or a field has the wrong JSON type. This includes a 
 `amount` such as `12.50`, which is **rejected rather than rounded** — see
 [ADR-0005](adr/0005-money-representation.md). Fix the request.
 
+When one field's type is the problem, `errors[]` names it by its full path, in the same shape
+`VALIDATION_FAILED` uses:
+
+```json
+"errors": [{"field": "amount", "code": "TYPE_MISMATCH", "message": "must be a whole number"}]
+```
+
 ### `VALIDATION_FAILED`
 
 **400** · not retryable
