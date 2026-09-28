@@ -32,7 +32,8 @@ curl -si -X POST http://localhost:8080/v1/authorizations \
 ```
 
 Send it a second time with the same `Idempotency-Key` and you get the original response
-back, byte for byte, with `Idempotency-Replayed: true`.
+back — the same status, the same `Location`, the same body byte for byte — with
+`Idempotency-Replayed: true`.
 
 Interactive API docs are at `http://localhost:8080/swagger-ui.html`.
 
@@ -122,14 +123,17 @@ amount is rejected rather than rounded.
 
 | Method | Path | Required headers | Success | Notable failures |
 |---|---|---|---|---|
-| `POST` | `/v1/authorizations` | `Authorization`, `Idempotency-Key` | `201` + `Location`; a replay returns the original status with `Idempotency-Replayed: true` | `401`, `400` validation, `422` key reuse, `409` key in progress, `503`/`504` acquirer |
+| `POST` | `/v1/authorizations` | `Authorization`, `Idempotency-Key` | `201` + `Location`; a replay returns the original status with `Idempotency-Replayed: true` | `401`, `400` validation, `422` key reuse, `409` key in progress, `504`/`503` acquirer timeout or unavailable, `502` acquirer rejected the request |
 | `GET` | `/v1/authorizations/{id}` | `Authorization` | `200` | `401`, `404` |
 | `POST` | `/v1/authorizations/{id}/capture` | `Authorization` | `200` | `401`, `404`, `409` illegal transition or expired, `422` partial capture |
 | `POST` | `/v1/authorizations/{id}/void` | `Authorization` | `200` | `401`, `404`, `409` |
 | `GET` | `/actuator/health/liveness` · `/readiness` | — | `200` | readiness `503` when Postgres is unreachable |
 | `GET` | `/actuator/prometheus` | — | `200` | |
-| `GET` | `/swagger-ui.html` · `/v3/api-docs` | — | `200` | |
+| `GET` | `/swagger-ui.html` · `/v3/api-docs` | — | `302` to the UI · `200` | |
 | `POST` | `/__simulator/acquirer/config` | — | `200` | simulator only; `SIMULATOR_ENABLED=false` removes it |
+
+Any `/v1` endpoint answers `503 SERVICE_UNAVAILABLE` with `Retry-After` while the database is
+unreachable — a condition to wait out, not a `500` to file as a bug.
 
 ### Lifecycle
 
@@ -252,12 +256,22 @@ re-drives the same downstream identifier rather than allocating a new one.
 | never retried | declines, `400`/`401`/`422`, open breaker | a decline is an answer; retrying a bad request just burns the budget |
 | breaker | count window 20, min 10 calls, 50 % failure or slow-call rate at 1 s, 10 s open, 3 half-open calls | opens in about ten calls, probes every ten seconds |
 
-Decorator order is `Retry(CircuitBreaker(call))` — Resilience4j's default, made explicit
-because it is load-bearing. Every attempt is recorded by the breaker, so an outage opens it
-in about ten calls rather than thirty; and `CallNotPermittedException` is excluded from the
+The policy is applied in code as `Retry(CircuitBreaker(attempt))`, not by annotation, and the
+order is load-bearing. Every attempt is recorded by the breaker, so an outage opens it in
+about ten calls rather than thirty; and `CallNotPermittedException` is excluded from the
 retry predicate, so an open breaker fails in microseconds instead of sleeping through three
 useless backoffs. `AcquirerFailureApiIT` asserts that an open breaker answers without any
 call leaving the process, and in under 500 ms.
+
+It is in code because a call has to remember its own history. A retry reports only its last
+failure, and when the breaker opens mid-retry that failure is the breaker's refusal — which,
+taken alone, says nothing was sent. If an earlier attempt timed out, that is false: the
+acquirer may hold an approval. So each call remembers the first attempt whose outcome was
+unknown, and never reports a known outcome after it; the caller gets `504`, and the attempt
+stays counted in `txnswitch_unresolved_attempts` until a retry with the same key resolves it.
+A later retry that is refused before sending cannot clear that either: the flag only grows
+across attempts on a key. `AcquirerResilienceIT`, `AcquirerFailureApiIT` and
+`IdempotencyPersistenceIT` each pin one half of this.
 
 Connect failures and read timeouts are deliberately not collapsed into one exception: a
 connect failure means nothing was sent, a read timeout means it may have been, and that
@@ -272,7 +286,8 @@ difference decides whether a hold can be pending at the acquirer.
   and included in every problem document.
 * **Probes** — `/actuator/health/readiness` includes the database, `/actuator/health/liveness`
   deliberately does not: restarting a healthy process will not bring a database back.
-  `ReadinessProbeIT` proves the difference by stopping a container.
+  `ReadinessProbeIT` proves the difference by stopping a container, and asserts that a
+  caller still routed to the instance gets `503` with `Retry-After`, not a `500`.
 * **Metrics** (`/actuator/prometheus`), all low-cardinality — no merchant id, nothing from
   the request body:
 
@@ -283,7 +298,7 @@ difference decides whether a hold can be pending at the acquirer.
 | `txnswitch_acquirer_call_duration_seconds{operation,result}` | one attempt against the acquirer |
 | `txnswitch_idempotency_conflicts_total{kind}` | repeated keys that were not plain replays |
 | `resilience4j_circuitbreaker_state{name="acquirer"}` | breaker state without reading the logs |
-| `txnswitch_unresolved_attempts` | **should be zero** — claims that reached the acquirer and were never resolved (see *Out of scope*) |
+| `txnswitch_unresolved_attempts` | **should be zero** — claims that may have reached the acquirer and were never resolved (see *Out of scope*) |
 
 ---
 
