@@ -1,0 +1,79 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 340" width="1280" height="340" role="img" aria-labelledby="title desc">
+  <title id="title">txn-switch</title>
+  <desc id="desc">A card authorization switch. The same request sent N times with one idempotency key is claimed once and reaches the acquirer once: one authorization, one hold.</desc>
+  <style>
+    .mono { font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace; }
+    .sans { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif; }
+    .fg { fill: #1f2328; } .muted { fill: #59636e; } .blue { fill: #0969da; } .green { fill: #1a7f37; }
+    .t13 { font-size: 13px; } .t15 { font-size: 15px; } .t16 { font-size: 16px; }
+    .pill { fill: #f6f8fa; stroke: #0969da; stroke-opacity: .55; stroke-width: 1.25; }
+    .base-in { fill: none; stroke: #0969da; stroke-opacity: .18; stroke-width: 2; }
+    .in  { fill: none; stroke: #0969da; stroke-width: 2.5; stroke-linecap: round; stroke-dasharray: 1 11; animation: flow 1.4s linear infinite; }
+    .base-out { fill: none; stroke: #1a7f37; stroke-opacity: .3; stroke-width: 2.5; }
+    .out { fill: none; stroke: #1a7f37; stroke-width: 3.5; stroke-linecap: round; stroke-dasharray: 1 11; animation: flow 1.4s linear infinite; }
+    .ring { fill: none; stroke: #0969da; stroke-width: 1.5; animation: pulse 2.8s ease-in-out infinite; }
+    @keyframes flow { to { stroke-dashoffset: -24; } }
+    @keyframes pulse { 0%, 100% { opacity: .12; } 50% { opacity: .65; } }
+    @media (prefers-reduced-motion: reduce) { .in, .out, .ring { animation: none; } }
+  </style>
+  <defs>
+    <pattern id="dots" width="22" height="22" patternUnits="userSpaceOnUse">
+      <circle cx="1.5" cy="1.5" r="1.2" fill="#1f2328" fill-opacity="0.09"/>
+    </pattern>
+    <radialGradient id="glow" cx="960" cy="190" r="420" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#0969da" stop-opacity="0.09"/>
+      <stop offset="1" stop-color="#0969da" stop-opacity="0"/>
+    </radialGradient>
+    <clipPath id="card"><rect x="0" y="0" width="1280" height="340" rx="18"/></clipPath>
+    <marker id="head" viewBox="0 0 10 10" refX="10" refY="5" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto">
+      <path d="M0 0 L10 5 L0 10 z" fill="#1a7f37"/>
+    </marker>
+  </defs>
+
+  <g clip-path="url(#card)">
+    <rect width="1280" height="340" fill="#ffffff"/>
+    <rect width="1280" height="340" fill="url(#dots)"/>
+    <rect width="1280" height="340" fill="url(#glow)"/>
+  </g>
+  <rect x="0.75" y="0.75" width="1278.5" height="338.5" rx="17.5" fill="none" stroke="#d0d7de" stroke-width="1.5"/>
+
+  <!-- the pitch -->
+  <text x="72" y="104" class="mono t15 blue" letter-spacing="3">CARD AUTHORIZATION SWITCH</text>
+  <text x="68" y="174" class="mono fg" font-size="76" font-weight="700" letter-spacing="-1">txn-switch</text>
+  <text x="72" y="226" class="sans fg" font-size="27" font-weight="600">The same request, N times.</text>
+  <text x="72" y="262" class="sans green" font-size="27" font-weight="600">One authorization. One hold.</text>
+  <text x="72" y="302" class="mono t15 muted">Java 21 · Spring Boot 3.5 · PostgreSQL 16 · Resilience4j</text>
+
+  <!-- N identical requests fan into one claim, and one call reaches the acquirer -->
+  <text x="758.0" y="72" class="mono t13 muted" text-anchor="middle">same Idempotency-Key × N</text>
+    <path d="M828 106 C 878 106, 858 190.0, 908 190.0" class="base-in"/>
+    <path d="M828 106 C 878 106, 858 190.0, 908 190.0" class="in" style="animation-delay:-0.00s"/>
+    <path d="M828 148 C 878 148, 858 190.0, 908 190.0" class="base-in"/>
+    <path d="M828 148 C 878 148, 858 190.0, 908 190.0" class="in" style="animation-delay:-0.28s"/>
+    <path d="M828 190 C 878 190, 858 190.0, 908 190.0" class="base-in"/>
+    <path d="M828 190 C 878 190, 858 190.0, 908 190.0" class="in" style="animation-delay:-0.56s"/>
+    <path d="M828 232 C 878 232, 858 190.0, 908 190.0" class="base-in"/>
+    <path d="M828 232 C 878 232, 858 190.0, 908 190.0" class="in" style="animation-delay:-0.84s"/>
+    <path d="M828 274 C 878 274, 858 190.0, 908 190.0" class="base-in"/>
+    <path d="M828 274 C 878 274, 858 190.0, 908 190.0" class="in" style="animation-delay:-1.12s"/>
+    <rect x="688" y="89" width="140" height="34" rx="17" class="pill"/>
+    <text x="758.0" y="111.5" class="mono t16 fg" text-anchor="middle">POST · k1</text>
+    <rect x="688" y="131" width="140" height="34" rx="17" class="pill"/>
+    <text x="758.0" y="153.5" class="mono t16 fg" text-anchor="middle">POST · k1</text>
+    <rect x="688" y="173" width="140" height="34" rx="17" class="pill"/>
+    <text x="758.0" y="195.5" class="mono t16 fg" text-anchor="middle">POST · k1</text>
+    <rect x="688" y="215" width="140" height="34" rx="17" class="pill"/>
+    <text x="758.0" y="237.5" class="mono t16 fg" text-anchor="middle">POST · k1</text>
+    <rect x="688" y="257" width="140" height="34" rx="17" class="pill"/>
+    <text x="758.0" y="279.5" class="mono t16 fg" text-anchor="middle">POST · k1</text>
+  <rect x="902" y="164" width="112" height="52" rx="14" class="ring"/>
+  <rect x="908" y="170" width="100" height="40" rx="10" fill="#f6f8fa" stroke="#0969da" stroke-width="1.5"/>
+  <text x="958.0" y="195.5" class="mono t16 fg" text-anchor="middle">claim</text>
+  <text x="958.0" y="236" class="mono t13 muted" text-anchor="middle">one winner</text>
+
+  <path d="M1010 190.0 L1085 190.0" class="base-out"/>
+  <path d="M1010 190.0 L1085 190.0" class="out" marker-end="url(#head)"/>
+  <rect x="1086" y="160" width="140" height="60" rx="12" fill="#f6f8fa" stroke="#1a7f37" stroke-width="1.75"/>
+  <text x="1156.0" y="185" class="mono t16 fg" text-anchor="middle">acquirer</text>
+  <text x="1156.0" y="207" class="mono t16 green" font-weight="700" text-anchor="middle">1 hold</text>
+</svg>

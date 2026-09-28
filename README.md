@@ -1,4 +1,24 @@
-# txn-switch
+<div align="center">
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/banner-dark.svg">
+  <img alt="txn-switch: the same request, N times. One authorization. One hold." src="docs/assets/banner-light.svg" width="100%">
+</picture>
+
+<br>
+
+[![CI](https://github.com/addiiiooo/txn-switch/actions/workflows/ci.yml/badge.svg)](https://github.com/addiiiooo/txn-switch/actions/workflows/ci.yml)
+![Java 21](https://img.shields.io/badge/Java-21-437291?logo=openjdk&logoColor=white)
+![Spring Boot 3.5](https://img.shields.io/badge/Spring_Boot-3.5-6DB33F?logo=springboot&logoColor=white)
+![PostgreSQL 16](https://img.shields.io/badge/PostgreSQL-16-4169E1?logo=postgresql&logoColor=white)
+![Line coverage gate](https://img.shields.io/badge/line_coverage_gate-85%25-2ea043)
+[![MIT licence](https://img.shields.io/badge/licence-MIT-0969da)](LICENSE)
+
+**[Run it](#run-it)** · **[See it run](#see-it-run)** · **[Guarantees](#what-it-guarantees)** · **[The idempotent retry](#the-idempotent-retry)** · **[API](#api)** · **[Resilience](#resilience)** · **[Decisions](#design-decisions-and-trade-offs)**
+
+</div>
+
+<br>
 
 A card **authorization switch**: a REST service that accepts payment authorization requests
 from merchants, routes each one to a downstream acquirer, and owns the lifecycle of the
@@ -6,10 +26,30 @@ resulting authorization. The interesting part is not the happy path — that is 
 an HTTP call — but everything around it: the same request arriving twice because a client
 retried, the same request arriving fifty times at once, an acquirer that answers slowly or
 not at all or after we have given up, and this process dying between "the acquirer approved"
-and "we wrote it down". Every design decision here serves one invariant: **a merchant that
-sends the same authorization request N times gets at most one authorization, and at most one
-hold on the cardholder's funds.** The rest of this README is about how that is arranged and
-how you can check it yourself.
+and "we wrote it down".
+
+> [!IMPORTANT]
+> **Every design decision here serves one invariant:** a merchant that sends the same
+> authorization request *N* times gets at most one authorization, and at most one hold on the
+> cardholder's funds.
+
+The rest of this README is about how that is arranged, and how you can check it yourself.
+
+---
+
+## What it guarantees
+
+Each row is a promise, the mechanism that keeps it, and the test that fails if it breaks.
+
+| Guarantee | Mechanism | Proven by |
+|---|---|---|
+| **N identical requests, one authorization, one hold** | `UNIQUE (merchant_id, idempotency_key)` picks the winner; every other request replays or gets `409` | [`ConcurrentAuthorizationIT`](src/test/java/com/txnswitch/adapter/in/web/ConcurrentAuthorizationIT.java) — 50 threads, one latch, one key |
+| **A timed-out attempt is never a double charge** | the authorization id is allocated before the call and is the acquirer's idempotency key; a failed attempt keeps it for the retry | [`AcquirerFailureApiIT`](src/test/java/com/txnswitch/adapter/in/web/AcquirerFailureApiIT.java), [`IdempotencyReplayIT`](src/test/java/com/txnswitch/adapter/in/web/IdempotencyReplayIT.java) |
+| **An unknown outcome is never reported as known** | each call remembers its first attempt whose outcome was unknown, and the flag only grows across attempts on a key | [`AcquirerResilienceIT`](src/test/java/com/txnswitch/adapter/out/acquirer/AcquirerResilienceIT.java), [`IdempotencyPersistenceIT`](src/test/java/com/txnswitch/adapter/out/persistence/IdempotencyPersistenceIT.java) |
+| **A replay is the original response** | the stored status and body bytes, the original `Location`, plus `Idempotency-Replayed: true` | [`IdempotencyReplayIT`](src/test/java/com/txnswitch/adapter/in/web/IdempotencyReplayIT.java) |
+| **A card number is never stored, logged or returned** | BIN and last four only, a keyed fingerprint, and a `SensitivePan` whose `toString()` is masked | [`PanLeakageIT`](src/test/java/com/txnswitch/adapter/in/web/PanLeakageIT.java) — every log line at DEBUG, every response, every column |
+| **Every documented error code is the real one** | `docs/errors.md` is parsed during the build and compared with the service | [`ErrorCatalogueTest`](src/test/java/com/txnswitch/adapter/in/web/ErrorCatalogueTest.java) |
+| **The domain is plain Java** | no framework type may appear in it, checked in the compiled classes | [`DomainPurityTest`](src/test/java/com/txnswitch/architecture/DomainPurityTest.java) |
 
 ---
 
@@ -36,6 +76,65 @@ back — the same status, the same `Location`, the same body byte for byte — w
 `Idempotency-Replayed: true`.
 
 Interactive API docs are at `http://localhost:8080/swagger-ui.html`.
+
+### See it run
+
+<details>
+<summary><b>A real session against a fresh <code>docker compose up</code></b> — a replay, a key reused for a different request, and a timeout that turns out to have been an approval</summary>
+
+<br>
+
+Output is trimmed to the status line, the headers that matter, and the leading fields of each
+body; nothing else is edited. `order.json` is the body from the command above, and
+`other-amount.json` is the same with `"amount":9999`.
+
+```console
+$ alias pay='curl -si localhost:8080/v1/authorizations -H "Authorization: Bearer sk_local_demo" -H "Content-Type: application/json"'
+
+$ pay -H 'Idempotency-Key: demo-key-0001' -d @order.json   # the first attempt
+HTTP/1.1 201
+Location: /v1/authorizations/01a0e6aa-2d47-763e-b9df-7fc7feffc680
+{"id":"01a0e6aa-2d47-763e-b9df-7fc7feffc680","status":"AUTHORIZED","amount":1250,"currency":"USD", …}
+
+$ pay -H 'Idempotency-Key: demo-key-0001' -d @order.json   # the client retries: same status, Location and bytes
+HTTP/1.1 201
+Idempotency-Replayed: true
+Location: /v1/authorizations/01a0e6aa-2d47-763e-b9df-7fc7feffc680
+{"id":"01a0e6aa-2d47-763e-b9df-7fc7feffc680","status":"AUTHORIZED","amount":1250,"currency":"USD", …}
+
+$ pay -H 'Idempotency-Key: demo-key-0001' -d @other-amount.json   # the same key for a different request
+HTTP/1.1 422
+{"code":"IDEMPOTENCY_KEY_REUSE","detail":"Idempotency-Key 'demo-key-0001' was first used for a different request", …}
+
+$ curl -s localhost:8080/__simulator/acquirer/config -H 'Content-Type: application/json' -d '{"latencyMillis":2000,"failureRate":0}'   # the acquirer stops answering in time
+{"latencyMillis":2000,"failureRate":0.0}
+
+$ pay -H 'Idempotency-Key: demo-key-0002' -d @order.json
+HTTP/1.1 504
+Retry-After: 1
+{"code":"ACQUIRER_TIMEOUT","detail":"The acquirer did not answer in time. Retry with the same Idempotency-Key.", …}
+
+$ curl -s localhost:8080/__simulator/acquirer/stats   # …but it did act on the request
+{"requests":4,"executions":2,"deduplicated":0}
+
+$ curl -s localhost:8080/__simulator/acquirer/config -H 'Content-Type: application/json' -d '{"latencyMillis":0,"failureRate":0}'   # it recovers
+{"latencyMillis":0,"failureRate":0.0}
+
+$ pay -H 'Idempotency-Key: demo-key-0002' -d @order.json   # the client retries, as it was told to
+HTTP/1.1 201
+Location: /v1/authorizations/01a0e6aa-2e94-7ee4-a4d3-8cc9722bc3a2
+{"id":"01a0e6aa-2e94-7ee4-a4d3-8cc9722bc3a2","status":"AUTHORIZED","amount":1250,"currency":"USD", …}
+
+$ curl -s localhost:8080/__simulator/acquirer/stats   # executions unchanged: the hold it already placed, not a second one
+{"requests":5,"executions":2,"deduplicated":1}
+```
+
+The timed-out request is the one to look at. The client was told `504` — outcome unknown,
+retry with the same key — while the acquirer had in fact approved it: two executions for two
+keys. The retry re-drove the same pre-allocated authorization id, and the acquirer handed back
+the hold it had already placed instead of placing a second one.
+
+</details>
 
 ---
 
@@ -395,14 +494,15 @@ purpose and the application logs a warning at startup if either is still in use 
 
 Deliberate omissions, with the two that a payments reviewer will look for stated in full.
 
-**Reversal of unknown-outcome attempts.** If the acquirer approves a hold and the answer
-never reaches us, that hold leaks until the issuer expires it. The fix is a sweeper that
-claims idempotency records still `IN_PROGRESS` with `downstream_attempted = true` and a
-lapsed lease (`FOR UPDATE SKIP LOCKED`), sends a reversal for the pre-allocated
-authorization id — which the acquirer already knows, so the reversal is itself idempotent —
-and completes the record with a terminal error so the key cannot be reused. It is not built.
-The exposure is instead **measured**: `txnswitch_unresolved_attempts` counts exactly those
-records and should be zero. An unmeasured gap is a lie; a measured one is a backlog item.
+> [!WARNING]
+> **Reversal of unknown-outcome attempts.** If the acquirer approves a hold and the answer
+> never reaches us, that hold leaks until the issuer expires it. The fix is a sweeper that
+> claims idempotency records still `IN_PROGRESS` with `downstream_attempted = true` and a
+> lapsed lease (`FOR UPDATE SKIP LOCKED`), sends a reversal for the pre-allocated
+> authorization id — which the acquirer already knows, so the reversal is itself idempotent —
+> and completes the record with a terminal error so the key cannot be reused. It is not built.
+> The exposure is instead **measured**: `txnswitch_unresolved_attempts` counts exactly those
+> records and should be zero. An unmeasured gap is a lie; a measured one is a backlog item.
 
 **Real authentication.** The API-key map is a genuine trust boundary but a primitive one: no
 rotation, no scopes, no expiry, no revocation without a restart, and the keys sit in the
@@ -422,9 +522,10 @@ yields exactly one outcome, but a real acquirer would refuse the second one; and
 circuit breaker is per-process, so five instances need five outages' worth of failed calls
 to all open.
 
-**No performance numbers appear anywhere in this repository**, because no benchmark was run.
-The timeout and breaker values are calibrated against a loopback simulator, not against a
-real acquirer; they are configuration, and they would need measuring against a real one.
+> [!NOTE]
+> **No performance numbers appear anywhere in this repository**, because no benchmark was run.
+> The timeout and breaker values are calibrated against a loopback simulator, not against a
+> real acquirer; they are configuration, and they would need measuring against a real one.
 
 ---
 
