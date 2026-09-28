@@ -24,12 +24,20 @@ public class AcquirerSimulatorState {
   private final AtomicLong requests = new AtomicLong();
   private final AtomicLong executions = new AtomicLong();
   private final AtomicLong deduplicated = new AtomicLong();
+  private final AtomicLong generation = new AtomicLong();
 
   private volatile long latencyMillis;
   private volatile double failureRate;
 
-  /** Called between tests and by the control endpoint. */
-  public void reset() {
+  /**
+   * Called between tests and by the control endpoint.
+   *
+   * <p>Starts a new generation. A call still in flight from before the reset, typically one
+   * sleeping in injected latency after its client gave up, finishes into the old generation and is
+   * neither stored nor counted, so it cannot leak into whatever runs next.
+   */
+  public synchronized void reset() {
+    generation.incrementAndGet();
     outcomesByKey.clear();
     attemptsByKey.clear();
     requests.set(0);
@@ -55,6 +63,11 @@ public class AcquirerSimulatorState {
     this.failureRate = value;
   }
 
+  /** The generation a call belongs to, captured when it arrives and handed back to remember. */
+  long generation() {
+    return generation.get();
+  }
+
   long countRequest() {
     return requests.incrementAndGet();
   }
@@ -74,16 +87,25 @@ public class AcquirerSimulatorState {
   }
 
   /**
-   * Stores an outcome for a key, first write wins.
+   * Stores an outcome for a key, first write wins, unless a reset has ended the call's generation.
    *
    * <p>First-write-wins matters: a slow call that finishes after its own retry has already been
    * answered must not overwrite what the caller was told, and {@code executions} must count
    * distinct keys rather than round trips, because that is the number a duplicate request must
    * never increase.
    *
-   * @return the outcome now associated with the key, which may be one an earlier call stored
+   * <p>Synchronized with {@link #reset()} because the generation check and the write must be one
+   * step: a call that passed the check just before a reset would otherwise still land in the table
+   * the reset had just cleared.
+   *
+   * @return the outcome now associated with the key, which may be one an earlier call stored; for a
+   *     call from an earlier generation, the outcome it brought, stored nowhere
    */
-  StoredOutcome remember(String idempotencyKey, StoredOutcome outcome) {
+  synchronized StoredOutcome remember(
+      long callGeneration, String idempotencyKey, StoredOutcome outcome) {
+    if (callGeneration != generation.get()) {
+      return outcome;
+    }
     StoredOutcome existing = outcomesByKey.putIfAbsent(idempotencyKey, outcome);
     if (existing != null) {
       return existing;

@@ -50,6 +50,8 @@ public class AcquirerSimulatorController {
       @RequestHeader("Idempotency-Key") String idempotencyKey,
       @RequestBody AuthorizeMessage message)
       throws InterruptedException {
+    // Captured first: if a reset lands while this call sleeps, remember() will see it.
+    long generation = state.generation();
     state.countRequest();
 
     Optional<StoredOutcome> replayed = state.replay(idempotencyKey);
@@ -64,20 +66,21 @@ public class AcquirerSimulatorController {
     }
 
     return switch (SimulatorScenario.forPan(message.pan().value())) {
-      case APPROVE -> approve(idempotencyKey);
-      case DECLINE_DO_NOT_HONOR -> decline(idempotencyKey, "DO_NOT_HONOR", "Do not honour");
+      case APPROVE -> approve(generation, idempotencyKey);
+      case DECLINE_DO_NOT_HONOR ->
+          decline(generation, idempotencyKey, "DO_NOT_HONOR", "Do not honour");
       case DECLINE_INSUFFICIENT_FUNDS ->
-          decline(idempotencyKey, "INSUFFICIENT_FUNDS", "Insufficient funds");
+          decline(generation, idempotencyKey, "INSUFFICIENT_FUNDS", "Insufficient funds");
       case FAIL_TWICE_THEN_APPROVE ->
           attempt <= 2
               ? ResponseEntity.status(HttpStatus.BAD_GATEWAY)
                   .body(new ErrorMessage("PROCESSING_ERROR", "temporary processing error"))
-              : approve(idempotencyKey);
+              : approve(generation, idempotencyKey);
       case SLOW_ONCE_THEN_APPROVE -> {
         if (attempt == 1) {
           Thread.sleep(SLOW_CALL_MILLIS);
         }
-        yield approve(idempotencyKey);
+        yield approve(generation, idempotencyKey);
       }
       case REJECT_AS_MALFORMED ->
           ResponseEntity.badRequest()
@@ -120,6 +123,7 @@ public class AcquirerSimulatorController {
 
   private ResponseEntity<?> acknowledge(String idempotencyKey, String prefix)
       throws InterruptedException {
+    long generation = state.generation();
     state.countRequest();
     Optional<StoredOutcome> replayed = state.replay(idempotencyKey);
     if (replayed.isPresent()) {
@@ -132,7 +136,9 @@ public class AcquirerSimulatorController {
     }
     StoredOutcome stored =
         state.remember(
-            idempotencyKey, new StoredOutcome("APPROVED", prefix + "-" + reference(), null, null));
+            generation,
+            idempotencyKey,
+            new StoredOutcome("APPROVED", prefix + "-" + reference(), null, null));
     return ResponseEntity.ok(new AcknowledgementMessage(stored.reference()));
   }
 
@@ -148,18 +154,22 @@ public class AcquirerSimulatorController {
     return null;
   }
 
-  private ResponseEntity<DecisionMessage> approve(String idempotencyKey) {
+  private ResponseEntity<DecisionMessage> approve(long generation, String idempotencyKey) {
     StoredOutcome outcome =
         state.remember(
+            generation,
             idempotencyKey,
             new StoredOutcome("APPROVED", "ACQ-" + reference(), approvalCode(), null));
     return ResponseEntity.ok(toDecision(outcome));
   }
 
-  private ResponseEntity<DecisionMessage> decline(String idempotencyKey, String code, String text) {
+  private ResponseEntity<DecisionMessage> decline(
+      long generation, String idempotencyKey, String code, String text) {
     StoredOutcome outcome =
         state.remember(
-            idempotencyKey, new StoredOutcome("DECLINED", "ACQ-" + reference(), code, text));
+            generation,
+            idempotencyKey,
+            new StoredOutcome("DECLINED", "ACQ-" + reference(), code, text));
     return ResponseEntity.ok(toDecision(outcome));
   }
 
