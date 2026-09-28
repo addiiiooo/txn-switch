@@ -39,7 +39,8 @@ public interface IdempotencyStore {
    * for the next attempt.
    *
    * @param downstreamAttempted false only when we are certain nothing was sent, which resets the
-   *     conservative flag set at claim time
+   *     conservative flag set when this claim was taken, but never a possible hold left by an
+   *     earlier attempt on the same key
    */
   void releaseLease(UUID recordId, Instant now, boolean downstreamAttempted);
 

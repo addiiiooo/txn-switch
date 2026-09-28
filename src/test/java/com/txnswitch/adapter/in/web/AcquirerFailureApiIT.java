@@ -5,7 +5,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.txnswitch.application.port.AcquirerTimeoutException;
 import com.txnswitch.testsupport.IntegrationTest;
+import io.github.resilience4j.circuitbreaker.CircuitBreaker;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpEntity;
@@ -38,6 +41,30 @@ class AcquirerFailureApiIT extends IntegrationTest {
     assertThat(jdbc.queryForObject("SELECT count(*) FROM authorizations", Long.class))
         .as("no authorization exists until the acquirer has given a definitive answer")
         .isZero();
+  }
+
+  @Test
+  void aTimeoutFollowedByTheBreakerOpeningIsReportedAsTheUnknownOutcomeItIs() throws Exception {
+    CircuitBreaker breaker = circuitBreakers.circuitBreaker("acquirer");
+    for (int i = 0; i < 9; i++) {
+      breaker.onError(0, TimeUnit.NANOSECONDS, new AcquirerTimeoutException("seeded", null));
+    }
+    simulator.latencyMillis(2_000);
+
+    ResponseEntity<String> response = authorize("key-unknown-1", "4111111111111111");
+
+    assertThat(breaker.getState())
+        .as("the breaker opened between attempts")
+        .isEqualTo(CircuitBreaker.State.OPEN);
+    assertThat(response.getStatusCode()).isEqualTo(HttpStatus.GATEWAY_TIMEOUT);
+    assertThat(problem(response).get("code").asText()).isEqualTo("ACQUIRER_TIMEOUT");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT downstream_attempted FROM idempotency_records WHERE idempotency_key = ?",
+                Boolean.class,
+                "key-unknown-1"))
+        .as("a hold may exist, so the attempt must stay counted until a retry resolves it")
+        .isTrue();
   }
 
   @Test

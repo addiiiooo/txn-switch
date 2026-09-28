@@ -51,6 +51,11 @@ public interface IdempotencyJpaRepository extends JpaRepository<IdempotencyRecor
    * Conditional takeover of an abandoned claim. Exactly one caller can win, because the update
    * itself is the test.
    *
+   * <p>A takeover is taken in order to send, exactly like a first claim, so it sets {@code
+   * downstream_attempted} pessimistically too. What the earlier claims may have done is kept in
+   * {@code prior_downstream_attempted} first, because the release that follows must not be able to
+   * erase it.
+   *
    * @return 1 if this caller now owns the claim
    */
   @Modifying
@@ -58,7 +63,10 @@ public interface IdempotencyJpaRepository extends JpaRepository<IdempotencyRecor
       value =
           """
           UPDATE idempotency_records
-             SET lease_expires_at = :newLeaseExpiresAt, attempts = attempts + 1
+             SET lease_expires_at = :newLeaseExpiresAt,
+                 attempts = attempts + 1,
+                 prior_downstream_attempted = downstream_attempted,
+                 downstream_attempted = TRUE
            WHERE id = :id AND state = 'IN_PROGRESS' AND lease_expires_at <= :now
           """,
       nativeQuery = true)
@@ -67,12 +75,18 @@ public interface IdempotencyJpaRepository extends JpaRepository<IdempotencyRecor
       @Param("now") Instant now,
       @Param("newLeaseExpiresAt") Instant newLeaseExpiresAt);
 
+  /**
+   * Gives up a claim. {@code downstream_attempted} becomes what this attempt knows OR'd with what
+   * earlier attempts on the key may have done: a retry refused before sending proves nothing about
+   * the attempt before it, which may have placed a hold.
+   */
   @Modifying
   @Query(
       value =
           """
           UPDATE idempotency_records
-             SET lease_expires_at = :now, downstream_attempted = :downstreamAttempted
+             SET lease_expires_at = :now,
+                 downstream_attempted = prior_downstream_attempted OR :downstreamAttempted
            WHERE id = :id AND state = 'IN_PROGRESS'
           """,
       nativeQuery = true)

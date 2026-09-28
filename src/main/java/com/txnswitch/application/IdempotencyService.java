@@ -92,7 +92,8 @@ public class IdempotencyService {
    * Gives up a claim without deleting it, so the pre-allocated authorization id survives for the
    * next attempt with the same key.
    *
-   * @param downstreamAttempted false only when the call provably never left this process
+   * @param downstreamAttempted false only when the call provably never left this process; it cannot
+   *     clear a possible hold left by an earlier attempt on the same key
    */
   @Transactional
   public void release(UUID recordId, boolean downstreamAttempted) {

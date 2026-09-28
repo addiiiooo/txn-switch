@@ -119,6 +119,34 @@ class IdempotencyPersistenceIT extends IntegrationTest {
   }
 
   @Test
+  void aRetryThatSendsNothingCannotEraseAnEarlierAttemptThatMightHave() {
+    IdempotencyRecord claimed = inTransaction(() -> store.claim(candidate("key-1"))).orElseThrow();
+    // The first attempt timed out: the acquirer may hold an approval.
+    inTransaction(() -> store.releaseLease(claimed.id(), Fixtures.NOW.plusSeconds(1), true));
+    // A retry takes the claim over, and the open breaker refuses it before anything is sent.
+    Instant retryAt = Fixtures.NOW.plusSeconds(2);
+    assertThat(inTransaction(() -> store.takeOverLease(claimed.id(), retryAt, LEASE))).isTrue();
+    inTransaction(() -> store.releaseLease(claimed.id(), retryAt.plusMillis(5), false));
+
+    assertThat(store.find(Fixtures.MERCHANT_ID, "key-1").orElseThrow().downstreamAttempted())
+        .as("what this attempt knows says nothing about the attempt before it")
+        .isTrue();
+  }
+
+  @Test
+  void aTakeoverAssumesItWillSendUntilItKnowsOtherwise() {
+    IdempotencyRecord claimed = inTransaction(() -> store.claim(candidate("key-1"))).orElseThrow();
+    inTransaction(() -> store.releaseLease(claimed.id(), Fixtures.NOW.plusSeconds(1), false));
+    Instant retryAt = Fixtures.NOW.plusSeconds(2);
+    assertThat(inTransaction(() -> store.takeOverLease(claimed.id(), retryAt, LEASE))).isTrue();
+    // The process dies mid-call, so no release ever arrives.
+
+    assertThat(store.find(Fixtures.MERCHANT_ID, "key-1").orElseThrow().downstreamAttempted())
+        .as("a crash after a takeover is as uncertain as a crash after the first claim")
+        .isTrue();
+  }
+
+  @Test
   void completingStoresTheResponseBytesToReplay() {
     IdempotencyRecord claimed = inTransaction(() -> store.claim(candidate("key-1"))).orElseThrow();
     String body = "{\"id\":\"x\",\"status\":\"AUTHORIZED\"}";

@@ -5,19 +5,24 @@ import com.txnswitch.adapter.out.acquirer.AcquirerMessages.AcknowledgementMessag
 import com.txnswitch.adapter.out.acquirer.AcquirerMessages.AuthorizeMessage;
 import com.txnswitch.adapter.out.acquirer.AcquirerMessages.DecisionMessage;
 import com.txnswitch.adapter.out.acquirer.AcquirerMessages.FollowUpMessage;
+import com.txnswitch.application.port.AcquirerException;
 import com.txnswitch.application.port.AcquirerGateway;
 import com.txnswitch.application.port.AcquirerProtocolException;
 import com.txnswitch.application.port.AcquirerTimeoutException;
 import com.txnswitch.application.port.AcquirerUnavailableException;
 import com.txnswitch.domain.acquirer.AcquirerDecision;
 import io.github.resilience4j.circuitbreaker.CallNotPermittedException;
-import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
-import io.github.resilience4j.retry.annotation.Retry;
+import io.github.resilience4j.circuitbreaker.CircuitBreaker;
+import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry;
+import io.github.resilience4j.retry.Retry;
+import io.github.resilience4j.retry.RetryRegistry;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import java.net.ConnectException;
 import java.net.http.HttpConnectTimeoutException;
 import java.net.http.HttpTimeoutException;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Supplier;
 import org.springframework.http.HttpStatusCode;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.ResourceAccessException;
@@ -27,11 +32,8 @@ import org.springframework.web.client.RestClientResponseException;
 /**
  * The acquirer, over HTTP, with the resilience policy from ADR-0004 attached.
  *
- * <p>Decorator order is Resilience4j's default and is load-bearing: {@code Retry} wraps {@code
- * CircuitBreaker}, so every attempt is recorded by the breaker and a sustained outage opens it in
- * about ten calls rather than thirty. Once open, {@link CallNotPermittedException} is excluded from
- * the retry predicate, so the call fails in microseconds instead of sleeping through three useless
- * backoffs.
+ * <p>The policy is applied in code rather than by annotation, in {@link #resiliently}, because a
+ * call needs to remember what its earlier attempts may have done; see there.
  *
  * <p>Every request carries the pre-allocated authorization id as the acquirer's idempotency key.
  * That is what makes retrying a read timeout safe rather than a double charge, and it is why the
@@ -45,56 +47,94 @@ public class HttpAcquirerClient implements AcquirerGateway {
 
   private static final String IDEMPOTENCY_KEY = "Idempotency-Key";
   private static final String CORRELATION_ID = "X-Correlation-Id";
+  private static final String RESILIENCE_INSTANCE = "acquirer";
 
   private final RestClient restClient;
   private final AcquirerEndpoint endpoint;
   private final String acquirerName;
   private final MeterRegistry meters;
+  private final Retry retry;
+  private final CircuitBreaker breaker;
 
   public HttpAcquirerClient(
       RestClient acquirerRestClient,
       AcquirerEndpoint endpoint,
       AcquirerProperties properties,
-      MeterRegistry meters) {
+      MeterRegistry meters,
+      RetryRegistry retries,
+      CircuitBreakerRegistry breakers) {
     this.restClient = acquirerRestClient;
     this.endpoint = endpoint;
     this.acquirerName = properties.name();
     this.meters = meters;
+    this.retry = retries.retry(RESILIENCE_INSTANCE);
+    this.breaker = breakers.circuitBreaker(RESILIENCE_INSTANCE);
   }
 
   @Override
-  @Retry(name = "acquirer", fallbackMethod = "authorizeFallback")
-  @CircuitBreaker(name = "acquirer")
   public AcquirerDecision authorize(AuthorizeCommand command) {
-    DecisionMessage decision =
-        post(
-            "/authorize",
-            command.authorizationId().toString(),
-            command.correlationId(),
-            new AuthorizeMessage(
-                command.merchantId(),
-                command.merchantReference(),
-                command.amountMinorUnits(),
-                command.currencyCode(),
-                com.txnswitch.adapter.SensitivePan.of(command.pan().exposeForAcquirer()),
-                command.expiryMonth(),
-                command.expiryYear()),
-            DecisionMessage.class);
-    return toDecision(decision);
+    return resiliently(
+        () ->
+            toDecision(
+                post(
+                    "/authorize",
+                    command.authorizationId().toString(),
+                    command.correlationId(),
+                    new AuthorizeMessage(
+                        command.merchantId(),
+                        command.merchantReference(),
+                        command.amountMinorUnits(),
+                        command.currencyCode(),
+                        com.txnswitch.adapter.SensitivePan.of(command.pan().exposeForAcquirer()),
+                        command.expiryMonth(),
+                        command.expiryYear()),
+                    DecisionMessage.class)));
   }
 
   @Override
-  @Retry(name = "acquirer", fallbackMethod = "followUpFallback")
-  @CircuitBreaker(name = "acquirer")
   public Acknowledgement capture(FollowUpCommand command) {
-    return acknowledge("/capture", "capture", command);
+    return resiliently(() -> acknowledge("/capture", "capture", command));
   }
 
   @Override
-  @Retry(name = "acquirer", fallbackMethod = "followUpFallback")
-  @CircuitBreaker(name = "acquirer")
   public Acknowledgement voidHold(FollowUpCommand command) {
-    return acknowledge("/void", "void", command);
+    return resiliently(() -> acknowledge("/void", "void", command));
+  }
+
+  /**
+   * One logical call: the retry, wrapping the breaker, wrapping a single attempt, plus a memory of
+   * the first attempt whose outcome was unknown.
+   *
+   * <p>The order is load-bearing. With the breaker inside the retry, every attempt is recorded, so
+   * a sustained outage opens it in about ten calls rather than thirty; and once it is open, its
+   * refusal is outside the retry predicate, so the call fails in microseconds instead of sleeping
+   * through the backoffs.
+   *
+   * <p>The memory is why this is not two annotations. A retry reports only its last failure, and
+   * when the breaker opens mid-retry that failure is the breaker's refusal, which on its own says
+   * nothing was sent. If an earlier attempt timed out, that is false: the acquirer may hold an
+   * approval, and the caller must hear "outcome unknown" so the attempt stays counted until a retry
+   * with the same key resolves it.
+   */
+  private <T> T resiliently(Supplier<T> attempt) {
+    AtomicReference<AcquirerException> firstUnknown = new AtomicReference<>();
+    Supplier<T> remembered =
+        () -> {
+          try {
+            return attempt.get();
+          } catch (AcquirerException e) {
+            if (e.outcomeUnknown()) {
+              firstUnknown.compareAndSet(null, e);
+            }
+            throw e;
+          }
+        };
+    try {
+      return Retry.decorateSupplier(retry, CircuitBreaker.decorateSupplier(breaker, remembered))
+          .get();
+    } catch (RuntimeException failure) {
+      throw translateFinal(failure, firstUnknown.get());
+    }
   }
 
   private Acknowledgement acknowledge(String path, String operation, FollowUpCommand command) {
@@ -189,27 +229,29 @@ public class HttpAcquirerClient implements AcquirerGateway {
   }
 
   /**
-   * Runs when the retries are exhausted or an exception is not retryable. Its job is to make sure
-   * every failure leaves this class as an {@code AcquirerException}, including the breaker's own.
+   * Makes sure every failure leaves this class as an {@code AcquirerException}, including the
+   * breaker's own, and that no failure reports a known outcome after an attempt whose outcome was
+   * not.
    */
-  @SuppressWarnings("unused")
-  private AcquirerDecision authorizeFallback(AuthorizeCommand command, Throwable failure) {
-    throw translateFallback(failure);
-  }
-
-  @SuppressWarnings("unused")
-  private Acknowledgement followUpFallback(FollowUpCommand command, Throwable failure) {
-    throw translateFallback(failure);
-  }
-
-  private static RuntimeException translateFallback(Throwable failure) {
+  private static RuntimeException translateFinal(
+      RuntimeException failure, AcquirerException earlierUnknown) {
+    boolean alreadyUnknown = failure instanceof AcquirerException e && e.outcomeUnknown();
+    if (earlierUnknown != null && !alreadyUnknown) {
+      String message =
+          earlierUnknown.getMessage()
+              + ", then "
+              + (failure instanceof CallNotPermittedException
+                  ? "the circuit opened"
+                  : failure.getMessage())
+              + "; the outcome is unknown";
+      return earlierUnknown instanceof AcquirerTimeoutException
+          ? new AcquirerTimeoutException(message, failure)
+          : new AcquirerUnavailableException(message, true, failure);
+    }
     if (failure instanceof CallNotPermittedException) {
       return new AcquirerUnavailableException(
           "the acquirer circuit is open; no call was made", false, failure);
     }
-    if (failure instanceof RuntimeException runtime) {
-      return runtime;
-    }
-    return new AcquirerUnavailableException("the acquirer call failed", false, failure);
+    return failure;
   }
 }

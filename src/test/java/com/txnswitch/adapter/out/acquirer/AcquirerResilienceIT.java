@@ -13,6 +13,7 @@ import com.txnswitch.domain.card.Pan;
 import com.txnswitch.testsupport.IntegrationTest;
 import io.github.resilience4j.circuitbreaker.CircuitBreaker;
 import java.util.UUID;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 
@@ -90,6 +91,29 @@ class AcquirerResilienceIT extends IntegrationTest {
 
     assertThat(thrown.outcomeUnknown()).isTrue();
     assertThat(simulator.requests()).as("bounded at three attempts").isEqualTo(3);
+  }
+
+  @Test
+  void aTimeoutFollowedByTheBreakerOpeningIsStillAnUnknownOutcome() {
+    // Nine recorded failures: the next one fills the breaker's window and trips it mid-retry.
+    CircuitBreaker breaker = circuitBreakers.circuitBreaker("acquirer");
+    for (int i = 0; i < 9; i++) {
+      breaker.onError(0, TimeUnit.NANOSECONDS, new AcquirerTimeoutException("seeded", null));
+    }
+    simulator.latencyMillis(2_000);
+
+    AcquirerTimeoutException thrown =
+        org.junit.jupiter.api.Assertions.assertThrows(
+            AcquirerTimeoutException.class, () -> acquirer.authorize(command("4111111111111111")));
+
+    assertThat(breaker.getState()).isEqualTo(CircuitBreaker.State.OPEN);
+    assertThat(simulator.requests())
+        .as("one attempt timed out, then the breaker refused the rest")
+        .isEqualTo(1);
+    assertThat(thrown.outcomeUnknown())
+        .as(
+            "the attempt that timed out may have placed a hold; the refusal after it changes nothing")
+        .isTrue();
   }
 
   @Test
