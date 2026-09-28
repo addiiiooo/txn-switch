@@ -200,7 +200,7 @@ thing a reviewer will want an answer for.
 ### 2.2 Error catalogue
 
 Full table with machine-readable codes, HTTP statuses and retry semantics lives in
-[`docs/errors.md`](docs/errors.md). Every problem document carries `type`, `title`,
+[`docs/errors.md`](errors.md). Every problem document carries `type`, `title`,
 `status`, `detail`, `code`, `correlationId`, and — where relevant — `errors[]`,
 `currentStatus`, `retryAfter`.
 

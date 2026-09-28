@@ -438,7 +438,7 @@ Each ADR states what was decided, what it costs, what was rejected, and which te
 | [0005](docs/adr/0005-money-representation.md) | Minor units in a `long` + ISO-4217 currency | A fractional `amount` is rejected, never rounded |
 | [0006](docs/adr/0006-layering.md) | Pure domain, three ports, no gratuitous interfaces | About 150 lines of hand-written mappers, paid on purpose |
 
-[`PLAN.md`](PLAN.md) has the design in full, including the failure-mode matrix.
+[`docs/PLAN.md`](docs/PLAN.md) has the design in full, including the failure-mode matrix.
 
 ---
 
