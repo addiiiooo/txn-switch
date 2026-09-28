@@ -14,6 +14,7 @@ import jakarta.validation.Valid;
 import jakarta.validation.constraints.Size;
 import java.net.URI;
 import java.util.UUID;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -83,11 +84,16 @@ public class AuthorizationController {
           ResponseEntity.created(URI.create(PATH + "/" + created.authorization().id()))
               .contentType(MediaType.APPLICATION_JSON)
               .body(created.responseBody());
-      case AuthorizeResult.Replayed replayed ->
-          ResponseEntity.status(replayed.httpStatus())
-              .header("Idempotency-Replayed", "true")
-              .contentType(MediaType.APPLICATION_JSON)
-              .body(replayed.responseBody());
+      case AuthorizeResult.Replayed replayed -> {
+        ResponseEntity.BodyBuilder response =
+            ResponseEntity.status(replayed.httpStatus()).header("Idempotency-Replayed", "true");
+        // Part of the original response, and the client replaying is usually the one that never
+        // saw it: its first response was lost, which is why it is retrying.
+        if (replayed.httpStatus() == HttpStatus.CREATED.value()) {
+          response.location(URI.create(PATH + "/" + replayed.authorizationId()));
+        }
+        yield response.contentType(MediaType.APPLICATION_JSON).body(replayed.responseBody());
+      }
     };
   }
 

@@ -75,7 +75,9 @@ public class IdempotencyService {
     }
     if (record.isCompleted()) {
       return new ClaimOutcome.Replay(
-          record.responseStatus().orElseThrow(), record.responseBody().orElse(""));
+          record.responseStatus().orElseThrow(),
+          record.responseBody().orElse(""),
+          record.authorizationId());
     }
     if (record.isLeaseHeldAt(now)) {
       return new ClaimOutcome.InProgress();

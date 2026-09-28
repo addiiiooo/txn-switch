@@ -111,7 +111,8 @@ public class AuthorizationService {
       case ClaimOutcome.Claimed claimed -> claim = claimed.record();
       case ClaimOutcome.Replay replay -> {
         metrics.record(sample, "REPLAYED", true);
-        return new AuthorizeResult.Replayed(replay.httpStatus(), replay.body());
+        return new AuthorizeResult.Replayed(
+            replay.httpStatus(), replay.body(), replay.authorizationId());
       }
       case ClaimOutcome.FingerprintMismatch ignored -> {
         metrics.recordIdempotencyConflict("fingerprint_mismatch");

@@ -49,6 +49,10 @@ class IdempotencyReplayIT extends IntegrationTest {
     assertThat(replay.getBody()).isEqualTo(first.getBody());
     assertThat(replay.getHeaders().getFirst("Idempotency-Replayed")).isEqualTo("true");
     assertThat(first.getHeaders().getFirst("Idempotency-Replayed")).isNull();
+    assertThat(replay.getHeaders().getLocation())
+        .as("the client whose first response was lost needs this more than anyone")
+        .isNotNull()
+        .isEqualTo(first.getHeaders().getLocation());
     assertThat(jdbc.queryForObject("SELECT count(*) FROM authorizations", Long.class)).isEqualTo(1);
     assertThat(simulator.executions()).as("no second hold").isEqualTo(1);
   }
@@ -80,6 +84,10 @@ class IdempotencyReplayIT extends IntegrationTest {
 
     assertThat(replay.getBody()).isEqualTo(first.getBody());
     assertThat(replay.getHeaders().getFirst("Idempotency-Replayed")).isEqualTo("true");
+    assertThat(replay.getHeaders().getLocation())
+        .as("a decline is a created resource too")
+        .isNotNull()
+        .isEqualTo(first.getHeaders().getLocation());
   }
 
   @Test

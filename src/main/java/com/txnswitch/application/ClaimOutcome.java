@@ -2,6 +2,7 @@
 package com.txnswitch.application;
 
 import com.txnswitch.domain.idempotency.IdempotencyRecord;
+import java.util.UUID;
 
 /**
  * What happened when a request tried to claim its idempotency key.
@@ -15,7 +16,7 @@ public sealed interface ClaimOutcome {
   record Claimed(IdempotencyRecord record) implements ClaimOutcome {}
 
   /** The key is complete and the original response is returned verbatim. */
-  record Replay(int httpStatus, String body) implements ClaimOutcome {}
+  record Replay(int httpStatus, String body, UUID authorizationId) implements ClaimOutcome {}
 
   /** The key was first used for a different request. */
   record FingerprintMismatch() implements ClaimOutcome {}
