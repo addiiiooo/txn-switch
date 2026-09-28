@@ -3,11 +3,16 @@ package com.txnswitch.observability;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.client.TestRestTemplate;
+import org.springframework.http.HttpEntity;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
@@ -61,5 +66,19 @@ class ReadinessProbeIT {
     assertThat(rest.getForEntity("/actuator/health/liveness", String.class).getStatusCode())
         .as("but the process is fine, and restarting it would not bring the database back")
         .isEqualTo(HttpStatus.OK);
+
+    HttpHeaders headers = new HttpHeaders();
+    headers.setBearerAuth("sk_local_demo");
+    ResponseEntity<String> call =
+        rest.exchange(
+            "/v1/authorizations/" + UUID.randomUUID(),
+            HttpMethod.GET,
+            new HttpEntity<>(headers),
+            String.class);
+    assertThat(call.getStatusCode())
+        .as("a caller still routed here is told to come back, not that it found a bug")
+        .isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
+    assertThat(call.getBody()).contains("\"code\":\"SERVICE_UNAVAILABLE\"");
+    assertThat(call.getHeaders().getFirst(HttpHeaders.RETRY_AFTER)).isNotBlank();
   }
 }

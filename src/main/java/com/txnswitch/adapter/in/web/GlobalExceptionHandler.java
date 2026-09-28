@@ -21,11 +21,14 @@ import java.util.Map;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.TypeMismatchException;
+import org.springframework.dao.DataAccessResourceFailureException;
+import org.springframework.dao.TransientDataAccessResourceException;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatusCode;
 import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
+import org.springframework.transaction.CannotCreateTransactionException;
 import org.springframework.validation.method.ParameterErrors;
 import org.springframework.validation.method.ParameterValidationResult;
 import org.springframework.web.HttpMediaTypeNotSupportedException;
@@ -143,6 +146,25 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
     log.error("Acquirer protocol failure: {}", e.getMessage());
     return respond(
         ErrorCode.ACQUIRER_PROTOCOL_ERROR, "The acquirer answered with something unusable.");
+  }
+
+  /**
+   * The database is unreachable: a condition, not a bug. Readiness reports it too, so a load
+   * balancer should already be routing elsewhere; this answers the callers still arriving here.
+   */
+  @ExceptionHandler({
+    DataAccessResourceFailureException.class,
+    TransientDataAccessResourceException.class,
+    CannotCreateTransactionException.class
+  })
+  ResponseEntity<ProblemDetail> handleDatabaseUnavailable(Exception e) {
+    log.warn("Database unavailable: {}", e.getMessage());
+    ProblemDetail problem =
+        problems.create(
+            ErrorCode.SERVICE_UNAVAILABLE,
+            "The service is temporarily unavailable. Retry shortly; an authorization is safe to"
+                + " retry with the same Idempotency-Key.");
+    return withRetryAfter(ErrorCode.SERVICE_UNAVAILABLE, problem, 5);
   }
 
   @ExceptionHandler(Exception.class)

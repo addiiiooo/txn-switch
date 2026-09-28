@@ -74,6 +74,7 @@ the original `Idempotency-Key` (it always should, when the answer is yes).
 | [`ACQUIRER_TIMEOUT`](#acquirer_timeout) | 504 | yes | **yes** |
 | [`ACQUIRER_UNAVAILABLE`](#acquirer_unavailable) | 503 | yes | **yes** |
 | [`ACQUIRER_PROTOCOL_ERROR`](#acquirer_protocol_error) | 502 | no | — |
+| [`SERVICE_UNAVAILABLE`](#service_unavailable) | 503 | yes | **yes** |
 | [`INTERNAL_ERROR`](#internal_error) | 500 | yes | **yes** |
 
 ---
@@ -265,6 +266,19 @@ bug on one side or the other; quote the `correlationId`.
 ---
 
 ## Server
+
+### `SERVICE_UNAVAILABLE`
+
+**503** · retryable · **reuse the same key**
+
+The service cannot reach its own database. Nothing is wrong with the request; honour
+`Retry-After`. Readiness reports the same condition, so a load balancer should already be
+routing around the instance, and this is what callers still arriving there are told.
+
+An authorization retried with the same key is safe however far the first attempt got. If its
+claim was never written, the retry is simply the first attempt. If it was, the claim keeps
+the pre-allocated authorization id, and the retry re-drives the acquirer with it once the
+lease lapses — so a hold placed before the database went away is found, not duplicated.
 
 ### `INTERNAL_ERROR`
 

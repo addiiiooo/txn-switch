@@ -39,6 +39,7 @@ public enum ErrorCode {
   ACQUIRER_UNAVAILABLE(HttpStatus.SERVICE_UNAVAILABLE, "The acquirer is unavailable"),
   ACQUIRER_PROTOCOL_ERROR(HttpStatus.BAD_GATEWAY, "The acquirer answered unexpectedly"),
 
+  SERVICE_UNAVAILABLE(HttpStatus.SERVICE_UNAVAILABLE, "Service temporarily unavailable"),
   INTERNAL_ERROR(HttpStatus.INTERNAL_SERVER_ERROR, "Internal error");
 
   private final HttpStatus status;
